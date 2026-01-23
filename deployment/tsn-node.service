@@ -1,0 +1,35 @@
+# TSN v2 Node Service
+
+[Unit]
+Description=The Spoken Network v2 Node
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tsn
+Group=tsn
+WorkingDirectory=/opt/tsn-node
+Environment="PATH=/opt/tsn-node/venv/bin"
+EnvironmentFile=/opt/tsn-node/.env
+
+ExecStart=/opt/tsn-node/venv/bin/python tsn_orchestrator.py
+
+# Restart on failure
+Restart=always
+RestartSec=10s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tsn-node
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tsn-node/incoming /opt/tsn-node/archive
+
+[Install]
+WantedBy=multi-user.target

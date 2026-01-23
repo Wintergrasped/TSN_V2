@@ -1,0 +1,161 @@
+# TSN v2 - Docker Compose Deployment
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: tsn_postgres
+    environment:
+      POSTGRES_DB: tsn
+      POSTGRES_USER: tsn_user
+      POSTGRES_PASSWORD: ${TSN_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tsn_user -d tsn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # TSN Server (Central Processing)
+  tsn_server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    container_name: tsn_server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database
+      TSN_DB_HOST: postgres
+      TSN_DB_PORT: 5432
+      TSN_DB_NAME: tsn
+      TSN_DB_USER: tsn_user
+      TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
+      
+      # Server
+      TSN_SERVER_ENABLED: "true"
+      TSN_NODE_ENABLED: "false"
+      TSN_SERVER_INCOMING_DIR: /incoming
+      TSN_STORAGE_BASE_PATH: /storage
+      
+      # Transcription
+      TSN_WHISPER_BACKEND: faster-whisper
+      TSN_WHISPER_MODEL: medium.en
+      TSN_WHISPER_DEVICE: cuda
+      TSN_WHISPER_MAX_CONCURRENT: 4
+      
+      # vLLM
+      TSN_VLLM_BASE_URL: ${TSN_VLLM_BASE_URL}
+      TSN_VLLM_API_KEY: ${TSN_VLLM_API_KEY:-sk-no-auth}
+      TSN_VLLM_MAX_CONCURRENT: 10
+      
+      # Monitoring
+      TSN_MONITORING_ENABLED: "true"
+      TSN_MONITORING_HOST: "0.0.0.0"
+      TSN_MONITORING_PORT: 8080
+      
+      # Logging
+      TSN_LOG_LEVEL: INFO
+      TSN_LOG_FORMAT: json
+    volumes:
+      - incoming_data:/incoming
+      - storage_data:/storage
+    ports:
+      - "8080:8080"  # Health check & metrics
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # TSN Node (Optional - for local testing)
+  tsn_node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node
+    container_name: tsn_node
+    profiles: ["node"]  # Only start with --profile node
+    environment:
+      # Database
+      TSN_DB_HOST: postgres
+      TSN_DB_PORT: 5432
+      TSN_DB_NAME: tsn
+      TSN_DB_USER: tsn_user
+      TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
+      
+      # Node
+      TSN_NODE_ENABLED: "true"
+      TSN_SERVER_ENABLED: "false"
+      TSN_NODE_NODE_ID: ${TSN_NODE_ID:-node001}
+      TSN_NODE_AUDIO_INCOMING_DIR: /node/incoming
+      TSN_NODE_AUDIO_ARCHIVE_DIR: /node/archive
+      
+      # SFTP
+      TSN_NODE_SFTP_HOST: tsn_server
+      TSN_NODE_SFTP_PORT: 22
+      TSN_NODE_SFTP_USERNAME: ${TSN_NODE_SFTP_USERNAME}
+      TSN_NODE_SFTP_PASSWORD: ${TSN_NODE_SFTP_PASSWORD}
+      TSN_NODE_SFTP_REMOTE_DIR: /incoming
+      TSN_NODE_TRANSFER_WORKERS: 2
+    volumes:
+      - node_incoming:/node/incoming
+      - node_archive:/node/archive
+    restart: unless-stopped
+
+  # Prometheus (Optional Monitoring)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: tsn_prometheus
+    profiles: ["monitoring"]
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  # Grafana (Optional Dashboard)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: tsn_grafana
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  incoming_data:
+  storage_data:
+  node_incoming:
+  node_archive:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: tsn_network

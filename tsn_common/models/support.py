@@ -1,0 +1,75 @@
+"""
+Support models - corrections, metrics, health checks.
+"""
+
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from tsn_common.models.base import Base
+
+
+class PhoneticCorrection(Base):
+    """
+    Phonetic correction map for Whisper ASR errors.
+    Example: "kilo kilo seven november quebec" → "KK7NQN"
+    """
+
+    __tablename__ = "phonetic_corrections"
+
+    detect: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    correct: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PhoneticCorrection(detect={self.detect!r}, correct={self.correct!r})>"
+
+
+class ProcessingMetric(Base):
+    """
+    Records processing metrics for each pipeline stage.
+    Used for performance monitoring and optimization.
+    """
+
+    __tablename__ = "processing_metrics"
+
+    stage: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    processing_time_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+
+    # Additional metadata
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+
+    __table_args__ = (Index("ix_processing_metrics_stage_timestamp", "stage", "timestamp"),)
+
+    def __repr__(self) -> str:
+        return f"<ProcessingMetric(stage={self.stage}, success={self.success})>"
+
+
+class SystemHealth(Base):
+    """
+    System health status for each component.
+    Used for monitoring and alerting.
+    """
+
+    __tablename__ = "system_health"
+
+    component: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # healthy, degraded, down
+    last_heartbeat: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # Resource metrics
+    cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    memory_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    disk_free_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Additional metrics
+    metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    def __repr__(self) -> str:
+        return f"<SystemHealth(component={self.component!r}, status={self.status})>"

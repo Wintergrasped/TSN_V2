@@ -1,0 +1,35 @@
+# TSN v2 Server Service
+
+[Unit]
+Description=The Spoken Network v2 Server
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=tsn
+Group=tsn
+WorkingDirectory=/opt/tsn
+Environment="PATH=/opt/tsn/venv/bin"
+EnvironmentFile=/opt/tsn/.env
+
+ExecStart=/opt/tsn/venv/bin/python tsn_orchestrator.py
+
+# Restart on failure
+Restart=always
+RestartSec=10s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tsn-server
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tsn/storage /opt/tsn/incoming
+
+[Install]
+WantedBy=multi-user.target

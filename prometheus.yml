@@ -1,0 +1,19 @@
+# Prometheus Configuration for TSN v2
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'tsn-v2'
+
+scrape_configs:
+  - job_name: 'tsn-server'
+    static_configs:
+      - targets: ['tsn_server:8080']
+        labels:
+          component: 'server'
+    metrics_path: '/metrics'
+    
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

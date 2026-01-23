@@ -1,0 +1,171 @@
+You are rebuilding The Spoken Network (TSN) from the ground up.
+
+A full reference implementation exists in the folder:
+
+REFERENCE_ORIGINAL/
+
+
+That folder contains the original TSN system — scripts, flow, structure, and intent.
+Your job is not to patch it.
+
+Your job is to:
+
+Study it.
+
+Understand exactly how it works.
+
+Then design and write a brand-new implementation that preserves the behavior and goals, but is:
+
+Faster
+
+More reliable
+
+Easier to maintain
+
+Designed for scale
+
+Cleanly separated into Node-Side and Server-Side subsystems
+
+This is a full rewrite, not a refactor.
+
+High-Level System Behavior
+
+There are two sides:
+
+Node Side (AllStar / Repeater Node)
+
+AllStarNode is configured to record per-PTT.
+
+Each transmission becomes a WAV file.
+
+A lightweight Watcher runs on the node:
+
+Detects new WAV files
+
+Queues them
+
+Ships them to the TSN Server via FTP/SFTP/HTTPS
+
+Must be resilient to:
+
+Network drops
+
+Server downtime
+
+Partial transfers
+
+Must never lose audio
+
+Server Side (TSN Core)
+
+When a WAV arrives:
+
+Store the file safely
+
+Transcribe with Whisper
+
+Save the raw transcript into MySQL
+
+Run a REGEX callsign extractor
+
+Cross-check each detected callsign with a vLLM pass (Qwen2.5-7B)
+
+Log:
+
+Callsign
+
+Timestamp (from filename)
+
+Transcript ID
+
+Then perform deeper vLLM analysis:
+
+Topics
+
+Net summaries
+
+Participant profiles
+
+Trends
+
+Behavioral / conversational structure
+
+Anything else that can be inferred
+
+The goal is to build a living, intelligent radio network memory.
+
+Your Task
+
+Read and understand everything in REFERENCE_ORIGINAL/
+
+Extract:
+
+The real behavior
+
+The implicit design decisions
+
+The data flow
+
+The failure modes it already handles
+
+Design a new architecture that:
+
+Uses modern async patterns
+
+Has clear boundaries between stages
+
+Can process many WAVs per second
+
+Can survive crashes mid-pipeline
+
+Can be horizontally scaled later
+
+Implement:
+
+Node-side watcher
+
+Server-side ingestion
+
+Transcription pipeline
+
+Callsign extraction + validation
+
+vLLM analysis stages
+
+Database schema updates if needed
+
+Logging and observability hooks
+
+Critical Instructions
+
+Do not copy the original code.
+
+Do not “slightly modify” it.
+
+Treat the reference as behavioral truth, not as a template.
+
+Every stage must be:
+
+Idempotent
+
+Restart-safe
+
+Observable
+
+Design as if this will run 24/7 for years.
+
+As you build:
+
+Take structured notes
+
+Explain design choices
+
+Call out improvements over the original
+
+Highlight tradeoffs
+
+Document every subsystem
+
+You are not just coding.
+
+You are architecting the next generation of TSN.
