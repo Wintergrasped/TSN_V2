@@ -105,9 +105,20 @@ class ServiceOrchestrator:
             logger.info("monitoring_disabled")
             return
 
+        if not self.settings.server.enabled:
+            logger.info("health_server_skipped", reason="server_disabled")
+            return
+
         logger.info("starting_health_server")
 
-        from tsn_server.health import run_server
+        try:
+            from tsn_server.health import run_server
+        except ModuleNotFoundError as exc:
+            logger.warning(
+                "health_server_module_missing",
+                error=str(exc),
+            )
+            return
 
         health_task = asyncio.create_task(
             run_server(
