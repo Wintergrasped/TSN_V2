@@ -82,29 +82,29 @@ class FileWatcher:
     async def check_pending_files(self) -> None:
         """Check pending files for stability and queue them."""
         ready_files = []
-        
+
         for file_path, detected_at in list(self.pending_files.items()):
             if file_path in self.processing_files:
                 continue
-            
+
             if not file_path.exists():
                 # File disappeared
                 del self.pending_files[file_path]
                 logger.warning("file_disappeared", filename=file_path.name)
                 continue
-            
+
             if self._is_file_stable(file_path):
-                ready_files.append(file_path)
-        
+                ready_files.append((file_path, detected_at))
+
         # Queue ready files
-        for file_path in ready_files:
+        for file_path, detected_at in ready_files:
             del self.pending_files[file_path]
             self.processing_files.add(file_path)
             await self.transfer_queue.put(file_path)
             logger.info(
                 "file_queued_for_transfer",
                 filename=file_path.name,
-                pending_time_sec=time.time() - self.pending_files.get(file_path, time.time()),
+                pending_time_sec=time.time() - detected_at,
             )
 
     async def watch_loop(self) -> None:
