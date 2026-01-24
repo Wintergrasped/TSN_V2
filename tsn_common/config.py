@@ -59,14 +59,18 @@ class NodeSettings(BaseSettings):
     """Node-side (repeater) settings."""
 
     enabled: bool = Field(default=False, description="Enable node services")
-    node_id: str = Field(description="Unique node identifier")
-    audio_incoming_dir: Path = Field(description="Directory to watch for new WAV files")
-    audio_archive_dir: Path = Field(description="Directory for archived audio")
+    node_id: str = Field(default="node-disabled", description="Unique node identifier")
+    audio_incoming_dir: Path = Field(
+        default=Path("/tmp/tsn_node/incoming"), description="Directory to watch for new WAV files"
+    )
+    audio_archive_dir: Path = Field(
+        default=Path("/tmp/tsn_node/archive"), description="Directory for archived audio"
+    )
 
     # Transfer settings
-    sftp_host: str = Field(description="SFTP server hostname")
+    sftp_host: str = Field(default="localhost", description="SFTP server hostname")
     sftp_port: int = Field(default=22)
-    sftp_username: str = Field(description="SFTP username")
+    sftp_username: str = Field(default="tsn", description="SFTP username")
     sftp_key_path: Path | None = Field(default=None, description="Path to SSH private key")
     sftp_password: SecretStr | None = Field(default=None, description="SFTP password")
     sftp_remote_dir: str = Field(default="/incoming", description="Remote upload directory")
