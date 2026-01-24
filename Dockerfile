@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Avoid large wheel download timeouts during pip install
+ENV PIP_DEFAULT_TIMEOUT=180
+
 # Set working directory
 WORKDIR /app
 
