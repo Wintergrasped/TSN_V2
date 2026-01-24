@@ -6,8 +6,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Enum, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import BigInteger, Enum, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tsn_common.models.base import Base
@@ -76,7 +75,7 @@ class AudioFile(Base):
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Extensibility
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
     # Relationships
     transcriptions: Mapped[list["Transcription"]] = relationship(

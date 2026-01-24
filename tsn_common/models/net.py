@@ -1,16 +1,14 @@
-"""
-Net session models - tracks organized radio nets and participation.
-"""
+"""Net session models - tracks organized radio nets and participation."""
 
 import enum
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from tsn_common.models.base import Base
+from tsn_common.models.base import Base, GUID
 
 if TYPE_CHECKING:
     from tsn_common.models.callsign import Callsign
@@ -42,7 +40,8 @@ class NetSession(Base):
     club_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Net Control Station
-    ncs_callsign_id: Mapped[UUID | None] = mapped_column(
+    ncs_callsign_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
         ForeignKey("callsigns.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -101,12 +100,14 @@ class NetParticipation(Base):
     __tablename__ = "net_participations"
 
     # Foreign keys
-    net_session_id: Mapped[UUID] = mapped_column(
+    net_session_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("net_sessions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    callsign_id: Mapped[UUID] = mapped_column(
+    callsign_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("callsigns.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

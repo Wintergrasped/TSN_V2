@@ -6,10 +6,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import MetaData, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import CHAR, MetaData
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 
 # Naming convention for constraints
@@ -24,6 +25,32 @@ convention = {
 metadata = MetaData(naming_convention=convention)
 
 
+class GUID(TypeDecorator):
+    """Platform-independent GUID type."""
+
+    impl = PG_UUID
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_UUID(as_uuid=True))
+        return dialect.type_descriptor(CHAR(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        if not isinstance(value, uuid.UUID):
+            value = uuid.UUID(str(value))
+        return value if dialect.name == "postgresql" else str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if isinstance(value, uuid.UUID):
+            return value
+        return uuid.UUID(str(value))
+
+
 class Base(AsyncAttrs, DeclarativeBase):
     """
     Base class for all models.
@@ -34,7 +61,7 @@ class Base(AsyncAttrs, DeclarativeBase):
 
     # Every table gets a UUID primary key
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+        GUID(),
         primary_key=True,
         default=uuid.uuid4,
         index=True,

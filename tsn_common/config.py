@@ -6,6 +6,7 @@ Hierarchical: Environment variables → .env file → Defaults
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote_plus
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,8 +15,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class DatabaseSettings(BaseSettings):
     """Database connection settings."""
 
-    host: str = Field(default="localhost", description="PostgreSQL host")
-    port: int = Field(default=5432, description="PostgreSQL port")
+    engine: Literal["postgresql", "mysql"] = Field(
+        default="postgresql",
+        description="Database engine to use",
+    )
+    host: str = Field(default="localhost", description="Database host")
+    port: int = Field(default=5432, description="Database port")
     name: str = Field(default="tsn", description="Database name")
     user: str = Field(default="tsn_user", description="Database user")
     password: SecretStr = Field(description="Database password")
@@ -24,13 +29,28 @@ class DatabaseSettings(BaseSettings):
     max_overflow: int = Field(default=10, description="Max overflow connections")
     pool_timeout: int = Field(default=30, description="Pool timeout seconds")
 
+    driver: str | None = Field(
+        default=None,
+        description="Optional SQLAlchemy async driver override",
+    )
+
+    @property
+    def resolved_driver(self) -> str:
+        """Return the async driver for the configured engine."""
+        if self.driver:
+            return self.driver
+        return "asyncpg" if self.engine == "postgresql" else "asyncmy"
+
     @property
     def url(self) -> str:
         """Get database URL for SQLAlchemy."""
-        return (
-            f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}"
-            f"@{self.host}:{self.port}/{self.name}"
-        )
+        user = quote_plus(self.user)
+        password = quote_plus(self.password.get_secret_value())
+        base = f"{self.engine}+{self.resolved_driver}://{user}:{password}"
+        url = f"{base}@{self.host}:{self.port}/{self.name}"
+        if self.engine == "mysql":
+            return f"{url}?charset=utf8mb4"
+        return url
 
     model_config = SettingsConfigDict(env_prefix="TSN_DB_")
 

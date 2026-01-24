@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 async def create_all_tables() -> None:
     """Create all tables from SQLAlchemy models."""
     settings = get_settings()
-    engine = get_engine(settings.database)
+    engine = get_engine()
     
     logger.info("creating_database_tables")
     
@@ -114,6 +114,7 @@ async def seed_phonetic_corrections() -> None:
 
 def init_alembic() -> None:
     """Initialize Alembic configuration."""
+    settings = get_settings()
     project_root = Path(__file__).parent.parent
     alembic_dir = project_root / "migrations"
     
@@ -123,7 +124,7 @@ def init_alembic() -> None:
         # Create alembic config
         alembic_cfg = Config()
         alembic_cfg.set_main_option("script_location", str(alembic_dir))
-        alembic_cfg.set_main_option("sqlalchemy.url", "postgresql+asyncpg://user:pass@localhost/tsn")
+        alembic_cfg.set_main_option("sqlalchemy.url", settings.database.url)
         
         # Initialize alembic
         command.init(alembic_cfg, str(alembic_dir))

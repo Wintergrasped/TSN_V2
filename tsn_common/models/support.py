@@ -4,8 +4,7 @@ Support models - corrections, metrics, health checks.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tsn_common.models.base import Base
@@ -43,7 +42,7 @@ class ProcessingMetric(Base):
     )
 
     # Additional metadata
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
     __table_args__ = (Index("ix_processing_metrics_stage_timestamp", "stage", "timestamp"),)
 
@@ -69,7 +68,7 @@ class SystemHealth(Base):
     disk_free_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Additional metrics
-    metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     def __repr__(self) -> str:
         return f"<SystemHealth(component={self.component!r}, status={self.status})>"

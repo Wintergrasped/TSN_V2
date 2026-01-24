@@ -1,15 +1,13 @@
-"""
-Transcription models - stores Whisper output and metadata.
-"""
+"""Transcription models - stores Whisper output and metadata."""
 
 import enum
+import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Enum, Float, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from tsn_common.models.base import Base
+from tsn_common.models.base import Base, GUID
 
 if TYPE_CHECKING:
     from tsn_common.models.audio import AudioFile
@@ -33,7 +31,8 @@ class Transcription(Base):
     __tablename__ = "transcriptions"
 
     # Foreign key to audio file
-    audio_file_id: Mapped[UUID] = mapped_column(
+    audio_file_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("audio_files.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

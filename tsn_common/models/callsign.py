@@ -1,8 +1,7 @@
-"""
-Callsign models - tracks amateur radio callsigns and their occurrences.
-"""
+"""Callsign models - tracks amateur radio callsigns and their occurrences."""
 
 import enum
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -13,14 +12,14 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from tsn_common.models.base import Base
+from tsn_common.models.base import Base, GUID
 
 if TYPE_CHECKING:
     from tsn_common.models.transcription import Transcription
@@ -63,7 +62,7 @@ class Callsign(Base):
     seen_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     # External data (from QRZ, etc.)
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
     # Relationships
     callsign_logs: Mapped[list["CallsignLog"]] = relationship(
@@ -109,12 +108,14 @@ class CallsignLog(Base):
     __tablename__ = "callsign_log"
 
     # Foreign keys
-    callsign_id: Mapped[UUID] = mapped_column(
+    callsign_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("callsigns.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    transcription_id: Mapped[UUID] = mapped_column(
+    transcription_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("transcriptions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -149,12 +150,14 @@ class CallsignTopic(Base):
     __tablename__ = "callsign_topics"
 
     # Foreign keys
-    callsign_id: Mapped[UUID] = mapped_column(
+    callsign_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("callsigns.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    transcription_id: Mapped[UUID] = mapped_column(
+    transcription_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("transcriptions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

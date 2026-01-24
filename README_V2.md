@@ -164,11 +164,13 @@ See `.env.example` for all options. Key settings:
 
 ### Database
 ```bash
+TSN_DB_ENGINE=postgresql  # or mysql
 TSN_DB_HOST=localhost
 TSN_DB_PORT=5432
 TSN_DB_NAME=tsn
 TSN_DB_USER=tsn_user
 TSN_DB_PASSWORD=secure_password
+TSN_DB_DRIVER=  # optional override e.g. asyncmy
 ```
 
 ### Node (Repeater Site)

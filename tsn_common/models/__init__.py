@@ -2,7 +2,7 @@
 SQLAlchemy database models for TSN V2.
 """
 
-from tsn_common.models.base import Base
+from tsn_common.models.base import Base, GUID
 from tsn_common.models.audio import AudioFile, AudioFileState
 from tsn_common.models.transcription import Transcription, TranscriptionBackend
 from tsn_common.models.callsign import Callsign, CallsignLog, CallsignTopic, ValidationMethod
@@ -12,6 +12,7 @@ from tsn_common.models.support import PhoneticCorrection, ProcessingMetric, Syst
 
 __all__ = [
     "Base",
+    "GUID",
     "AudioFile",
     "AudioFileState",
     "Transcription",
