@@ -42,7 +42,7 @@ class ServiceOrchestrator:
         # Start transfer workers
         for i in range(self.settings.node.transfer_workers):
             worker_task = asyncio.create_task(
-                transfer_worker(i, watcher.queue, transfer_agent)
+                transfer_worker(i, watcher.transfer_queue, transfer_agent)
             )
             self.tasks.append(worker_task)
 
