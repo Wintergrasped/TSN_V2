@@ -216,7 +216,10 @@ class ServerSettings(BaseSettings):
 class StorageSettings(BaseSettings):
     """Storage settings."""
 
-    base_path: Path = Field(description="Base storage directory for audio files")
+    base_path: Path = Field(
+        default=Path("/tmp/tsn_storage"),
+        description="Base storage directory for audio files",
+    )
 
     @field_validator("base_path")
     @classmethod
