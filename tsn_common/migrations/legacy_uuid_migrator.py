@@ -190,6 +190,15 @@ class LegacyUUIDMigrator:
                 if not await self._column_exists(conn, table, "id_uuid"):
                     continue
                 await self._record_and_drop_indexes(conn, table, "id")
+                if await self._column_has_auto_increment(conn, table, "id"):
+                    column_type = await self._get_column_type(conn, table, "id")
+                    if column_type is None:
+                        raise RuntimeError(f"Unable to determine column type for {table}.id")
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE `{table}` MODIFY COLUMN id {column_type} NOT NULL"
+                        )
+                    )
                 await conn.execute(text(f"ALTER TABLE `{table}` DROP PRIMARY KEY"))
                 await conn.execute(text(f"ALTER TABLE `{table}` DROP COLUMN id"))
                 await conn.execute(
@@ -328,6 +337,22 @@ class LegacyUUIDMigrator:
         if await self._column_is_uuid(conn, table, "id"):
             return "id"
         return None
+
+    async def _column_has_auto_increment(self, conn: AsyncConnection, table: str, column: str) -> bool:
+        result = await conn.execute(
+            text(
+                """
+                SELECT EXTRA
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = :schema
+                  AND TABLE_NAME = :table
+                  AND COLUMN_NAME = :column
+                """
+            ),
+            {"schema": self.schema, "table": table, "column": column},
+        )
+        extra = result.scalar()
+        return bool(extra and "auto_increment" in extra.lower())
 
     async def _ensure_column(self, conn: AsyncConnection, table: str, column: str, definition: str) -> None:
         if await self._column_exists(conn, table, column):
