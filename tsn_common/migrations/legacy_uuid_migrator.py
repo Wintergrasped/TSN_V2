@@ -189,6 +189,13 @@ class LegacyUUIDMigrator:
                     continue
                 if not await self._column_exists(conn, table, "id_uuid"):
                     continue
+                if await self._column_is_uuid(conn, table, "id"):
+                    logger.info(
+                        "primary_swap_skipped",
+                        table=table,
+                        reason="already_uuid",
+                    )
+                    continue
                 await self._record_and_drop_indexes(conn, table, "id")
                 if await self._column_has_auto_increment(conn, table, "id"):
                     column_type = await self._get_column_type(conn, table, "id")
