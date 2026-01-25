@@ -115,6 +115,14 @@ class LegacyUUIDMigrator:
             for fk in self.FOREIGN_KEYS:
                 if not await self._table_exists(conn, fk.table):
                     continue
+                if not await self._column_exists(conn, fk.table, fk.column):
+                    logger.info(
+                        "foreign_helper_skipped",
+                        table=fk.table,
+                        column=fk.column,
+                        reason="column_missing",
+                    )
+                    continue
                 if await self._column_is_uuid(conn, fk.table, fk.column):
                     continue
                 parent_uuid_column = await self._resolve_parent_uuid_column(conn, fk.ref_table)
