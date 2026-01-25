@@ -117,17 +117,19 @@ class LegacyUUIDMigrator:
                     continue
                 if await self._column_is_uuid(conn, fk.table, fk.column):
                     continue
-                parent_has_uuid = await self._column_exists(conn, fk.ref_table, "id_uuid")
-                if not parent_has_uuid:
+                parent_uuid_column = await self._resolve_parent_uuid_column(conn, fk.ref_table)
+                if parent_uuid_column is None:
                     logger.error("parent_uuid_missing", table=fk.ref_table)
-                    raise RuntimeError(f"Parent table {fk.ref_table} missing id_uuid helper column")
+                    raise RuntimeError(
+                        f"Parent table {fk.ref_table} does not have legacy ids to map or UUID primary keys"
+                    )
                 helper_column = f"{fk.column}_uuid"
                 await self._ensure_column(conn, fk.table, helper_column, "CHAR(36) NULL")
                 update_sql = text(
                     f"""
                     UPDATE `{fk.table}` child
                     JOIN `{fk.ref_table}` parent ON child.`{fk.column}` = parent.`id`
-                    SET child.`{helper_column}` = parent.`id_uuid`
+                    SET child.`{helper_column}` = parent.`{parent_uuid_column}`
                     WHERE child.`{fk.column}` IS NOT NULL
                       AND child.`{helper_column}` IS NULL
                     """
@@ -303,6 +305,13 @@ class LegacyUUIDMigrator:
         )
         column_type = result.scalar()
         return bool(column_type and "char(36" in column_type.lower())
+
+    async def _resolve_parent_uuid_column(self, conn: AsyncConnection, table: str) -> str | None:
+        if await self._column_exists(conn, table, "id_uuid"):
+            return "id_uuid"
+        if await self._column_is_uuid(conn, table, "id"):
+            return "id"
+        return None
 
     async def _ensure_column(self, conn: AsyncConnection, table: str, column: str, definition: str) -> None:
         if await self._column_exists(conn, table, column):
