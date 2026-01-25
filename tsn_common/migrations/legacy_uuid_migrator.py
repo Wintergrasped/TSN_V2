@@ -159,6 +159,14 @@ class LegacyUUIDMigrator:
     async def _swap_foreign_key_columns(self) -> None:
         async with self.engine.begin() as conn:
             for fk in self.FOREIGN_KEYS:
+                if not await self._column_exists(conn, fk.table, fk.column):
+                    logger.info(
+                        "foreign_swap_skipped",
+                        table=fk.table,
+                        column=fk.column,
+                        reason="column_missing",
+                    )
+                    continue
                 if await self._column_is_uuid(conn, fk.table, fk.column):
                     continue
                 helper_column = f"{fk.column}_uuid"
