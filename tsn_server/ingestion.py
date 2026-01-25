@@ -3,6 +3,7 @@ Ingestion service - receives files and queues them for processing.
 """
 
 import asyncio
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -114,9 +115,17 @@ class IngestionService:
                 # Get audio metadata
                 metadata = get_audio_metadata(file_path)
                 
-                # Move to storage
+                # Move to storage (handle cross-device moves)
                 storage_path = self.storage_dir / file_path.name
-                file_path.rename(storage_path)
+                try:
+                    file_path.rename(storage_path)
+                except OSError as exc:
+                    logger.warning(
+                        "rename_failed_falling_back_to_copy",
+                        filename=file_path.name,
+                        error=str(exc),
+                    )
+                    shutil.move(str(file_path), str(storage_path))
                 
                 # Create database record
                 audio_file = AudioFile(

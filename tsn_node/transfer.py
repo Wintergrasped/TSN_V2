@@ -3,6 +3,7 @@ Transfer agent - uploads files to server via SFTP with retry logic.
 """
 
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -216,7 +217,15 @@ class TransferAgent:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 archive_path = archive_dir / f"{file_path.stem}_{timestamp}{file_path.suffix}"
             
-            file_path.rename(archive_path)
+            try:
+                file_path.rename(archive_path)
+            except OSError as exc:
+                logger.warning(
+                    "archive_rename_failed_using_copy",
+                    filename=file_path.name,
+                    error=str(exc),
+                )
+                shutil.move(str(file_path), str(archive_path))
             
             logger.info(
                 "file_archived",
