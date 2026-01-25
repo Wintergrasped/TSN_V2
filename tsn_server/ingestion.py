@@ -166,9 +166,14 @@ class IngestionService:
         files = []
         
         try:
-            for file_path in self.incoming_dir.glob("*.wav"):
-                if file_path.is_file():
-                    files.append(file_path)
+            for file_path in self.incoming_dir.iterdir():
+                if not file_path.is_file():
+                    continue
+
+                if file_path.suffix.lower() != ".wav":
+                    continue
+
+                files.append(file_path)
             
             logger.info(
                 "incoming_directory_scanned",
