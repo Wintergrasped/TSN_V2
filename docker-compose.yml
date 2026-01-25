@@ -110,8 +110,8 @@ services:
       TSN_NODE_SFTP_REMOTE_DIR: /incoming
       TSN_NODE_TRANSFER_WORKERS: 2
     volumes:
-      - node_incoming:/node/incoming
-      - node_archive:/node/archive
+      - /home/wintergrasped/tsn_incoming:/node/incoming
+      - /storage:/node/archive
     restart: unless-stopped
 
   # Prometheus (Optional Monitoring)

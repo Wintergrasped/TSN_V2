@@ -67,6 +67,45 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 ```
 
+## 🗃️ Legacy Schema Migration (MySQL)
+
+If you are upgrading an existing MySQL deployment (for example the
+`repeater` schema on 51.81.202.9) you **must** migrate the legacy tables
+before running `tsn_common.db_init`. The new ORM expects UUID primary keys
+and different column layouts, so attempting to reuse the old tables leads to
+`FOREIGN KEY ... incorrectly formed` errors.
+
+We ship an automated migrator that performs the following steps safely:
+
+1. Creates a full copy of the current database inside a timestamped schema
+  (e.g. `repeater_legacy_20260124_2230`). No rows are deleted—your existing
+  application can still query the backup schema if needed.
+2. Drops all legacy tables/views from the active schema so the TSN v2 schema
+  can be recreated from scratch.
+3. Recreates every TSN v2 table and seeds the built‑in phonetic corrections.
+4. Records the migration version (`tsn_schema_migrations`) to avoid reruns.
+
+> ⚠️ **Important:** the migrator is destructive to the *current* schema
+> (after a backup is taken). Double‑check your `.env` connection details
+> before executing it.
+
+### Migration workflow
+
+```bash
+# 1. Backup + rebuild schema (runs inside the repo root)
+poetry run python scripts/migrate_legacy_schema.py
+
+# 2. Recreate tables + seed defaults (idempotent)
+docker compose run --rm tsn_server python -m tsn_common.db_init
+
+# 3. Bring the stack up normally
+docker compose up -d
+```
+
+The migrator is safe to keep in your automation—it will exit immediately if
+it detects the `tsn_schema_migrations` table (meaning the upgrade already
+happened).
+
 ## 📋 CLI Commands
 
 ```bash
