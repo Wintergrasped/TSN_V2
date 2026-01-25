@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Sequence
 
 from sqlalchemy import text
-from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from tsn_common import setup_logging
 from tsn_common.config import get_settings
@@ -70,63 +70,59 @@ class LegacyUUIDMigrator:
     def __init__(self) -> None:
         settings = get_settings()
         self.schema = settings.database.name
-        self.engine = get_engine()
-        self.sync_engine = self.engine.sync_engine
+        self.engine: AsyncEngine = get_engine()
         self.index_definitions: Dict[tuple[str, str], IndexDefinition] = {}
 
-    def run(self) -> None:
-        if not self._needs_migration():
+    async def run(self) -> None:
+        if not await self._needs_migration():
             logger.info("legacy_uuid_migration_skipped", reason="schema already matches models")
             return
 
         logger.info("legacy_uuid_migration_started", schema=self.schema)
-        self._prepare_uuid_columns()
-        self._prepare_foreign_key_columns()
-        self._drop_legacy_foreign_keys()
-        self._swap_foreign_key_columns()
-        self._swap_primary_keys()
-        self._recreate_indexes()
-        self._add_foreign_keys()
-        self._record_migration()
+        await self._prepare_uuid_columns()
+        await self._prepare_foreign_key_columns()
+        await self._drop_legacy_foreign_keys()
+        await self._swap_foreign_key_columns()
+        await self._swap_primary_keys()
+        await self._recreate_indexes()
+        await self._add_foreign_keys()
+        await self._record_migration()
         logger.info("legacy_uuid_migration_complete", schema=self.schema)
 
     # --- high-level helpers -------------------------------------------------
 
-    def _needs_migration(self) -> bool:
-        column = self._get_column_type("callsigns", "id")
+    async def _needs_migration(self) -> bool:
+        async with self.engine.begin() as conn:
+            column = await self._get_column_type(conn, "callsigns", "id")
         if column is None:
             return False
         return "char" not in column.lower()
 
-    def _prepare_uuid_columns(self) -> None:
-        with self.sync_engine.begin() as conn:
+    async def _prepare_uuid_columns(self) -> None:
+        async with self.engine.begin() as conn:
             for table in self.TABLES:
-                if not self._table_exists(conn, table):
+                if not await self._table_exists(conn, table):
                     continue
-                if self._column_is_uuid(conn, table, "id"):
+                if await self._column_is_uuid(conn, table, "id"):
                     continue
-                self._ensure_column(conn, table, "id_uuid", "CHAR(36) NULL")
-                conn.execute(
-                    text(f"UPDATE `{table}` SET id_uuid = UUID() WHERE id_uuid IS NULL")
-                )
-                conn.execute(
-                    text(f"ALTER TABLE `{table}` MODIFY COLUMN id_uuid CHAR(36) NOT NULL")
-                )
+                await self._ensure_column(conn, table, "id_uuid", "CHAR(36) NULL")
+                await conn.execute(text(f"UPDATE `{table}` SET id_uuid = UUID() WHERE id_uuid IS NULL"))
+                await conn.execute(text(f"ALTER TABLE `{table}` MODIFY COLUMN id_uuid CHAR(36) NOT NULL"))
                 logger.info("uuid_column_populated", table=table)
 
-    def _prepare_foreign_key_columns(self) -> None:
-        with self.sync_engine.begin() as conn:
+    async def _prepare_foreign_key_columns(self) -> None:
+        async with self.engine.begin() as conn:
             for fk in self.FOREIGN_KEYS:
-                if not self._table_exists(conn, fk.table):
+                if not await self._table_exists(conn, fk.table):
                     continue
-                if self._column_is_uuid(conn, fk.table, fk.column):
+                if await self._column_is_uuid(conn, fk.table, fk.column):
                     continue
-                parent_has_uuid = self._column_exists(conn, fk.ref_table, "id_uuid")
+                parent_has_uuid = await self._column_exists(conn, fk.ref_table, "id_uuid")
                 if not parent_has_uuid:
                     logger.error("parent_uuid_missing", table=fk.ref_table)
                     raise RuntimeError(f"Parent table {fk.ref_table} missing id_uuid helper column")
                 helper_column = f"{fk.column}_uuid"
-                self._ensure_column(conn, fk.table, helper_column, "CHAR(36) NULL")
+                await self._ensure_column(conn, fk.table, helper_column, "CHAR(36) NULL")
                 update_sql = text(
                     f"""
                     UPDATE `{fk.table}` child
@@ -136,78 +132,78 @@ class LegacyUUIDMigrator:
                       AND child.`{helper_column}` IS NULL
                     """
                 )
-                conn.execute(update_sql)
+                await conn.execute(update_sql)
                 null_sql = "NULL" if fk.nullable else "NOT NULL"
-                conn.execute(
+                await conn.execute(
                     text(
                         f"ALTER TABLE `{fk.table}` MODIFY COLUMN `{helper_column}` CHAR(36) {null_sql}"
                     )
                 )
                 logger.info("foreign_helper_populated", table=fk.table, column=fk.column)
 
-    def _drop_legacy_foreign_keys(self) -> None:
-        with self.sync_engine.begin() as conn:
+    async def _drop_legacy_foreign_keys(self) -> None:
+        async with self.engine.begin() as conn:
             for fk in self.FOREIGN_KEYS:
-                self._drop_foreign_keys_for_column(conn, fk.table, fk.column)
+                await self._drop_foreign_keys_for_column(conn, fk.table, fk.column)
 
-    def _swap_foreign_key_columns(self) -> None:
-        with self.sync_engine.begin() as conn:
+    async def _swap_foreign_key_columns(self) -> None:
+        async with self.engine.begin() as conn:
             for fk in self.FOREIGN_KEYS:
-                if self._column_is_uuid(conn, fk.table, fk.column):
+                if await self._column_is_uuid(conn, fk.table, fk.column):
                     continue
                 helper_column = f"{fk.column}_uuid"
-                if not self._column_exists(conn, fk.table, helper_column):
+                if not await self._column_exists(conn, fk.table, helper_column):
                     raise RuntimeError(f"Helper column {helper_column} missing on {fk.table}")
-                self._record_and_drop_indexes(conn, fk.table, fk.column)
-                conn.execute(text(f"ALTER TABLE `{fk.table}` DROP COLUMN `{fk.column}`"))
+                await self._record_and_drop_indexes(conn, fk.table, fk.column)
+                await conn.execute(text(f"ALTER TABLE `{fk.table}` DROP COLUMN `{fk.column}`"))
                 null_sql = "NULL" if fk.nullable else "NOT NULL"
-                conn.execute(
+                await conn.execute(
                     text(
                         f"ALTER TABLE `{fk.table}` CHANGE COLUMN `{helper_column}` `{fk.column}` CHAR(36) {null_sql}"
                     )
                 )
                 logger.info("foreign_column_swapped", table=fk.table, column=fk.column)
 
-    def _swap_primary_keys(self) -> None:
-        with self.sync_engine.begin() as conn:
+    async def _swap_primary_keys(self) -> None:
+        async with self.engine.begin() as conn:
             for table in self.TABLES:
-                if not self._table_exists(conn, table):
+                if not await self._table_exists(conn, table):
                     continue
-                if not self._column_exists(conn, table, "id_uuid"):
+                if not await self._column_exists(conn, table, "id_uuid"):
                     continue
-                self._record_and_drop_indexes(conn, table, "id")
-                conn.execute(text(f"ALTER TABLE `{table}` DROP PRIMARY KEY"))
-                conn.execute(text(f"ALTER TABLE `{table}` DROP COLUMN id"))
-                conn.execute(
+                await self._record_and_drop_indexes(conn, table, "id")
+                await conn.execute(text(f"ALTER TABLE `{table}` DROP PRIMARY KEY"))
+                await conn.execute(text(f"ALTER TABLE `{table}` DROP COLUMN id"))
+                await conn.execute(
                     text(
                         f"ALTER TABLE `{table}` CHANGE COLUMN id_uuid id CHAR(36) NOT NULL"
                     )
                 )
-                conn.execute(text(f"ALTER TABLE `{table}` ADD PRIMARY KEY (id)"))
+                await conn.execute(text(f"ALTER TABLE `{table}` ADD PRIMARY KEY (id)"))
                 logger.info("primary_key_swapped", table=table)
 
-    def _recreate_indexes(self) -> None:
+    async def _recreate_indexes(self) -> None:
         if not self.index_definitions:
             return
-        with self.sync_engine.begin() as conn:
+        async with self.engine.begin() as conn:
             for definition in self.index_definitions.values():
                 columns_sql = ", ".join(f"`{col}`" for col in definition.columns)
                 unique_sql = "UNIQUE " if definition.unique else ""
                 sql = text(
                     f"CREATE {unique_sql}INDEX `{definition.name}` ON `{definition.table}` ({columns_sql})"
                 )
-                conn.execute(sql)
+                await conn.execute(sql)
                 logger.info("index_recreated", table=definition.table, index=definition.name)
 
-    def _add_foreign_keys(self) -> None:
-        with self.sync_engine.begin() as conn:
+    async def _add_foreign_keys(self) -> None:
+        async with self.engine.begin() as conn:
             for fk in self.FOREIGN_KEYS:
-                if not self._table_exists(conn, fk.table):
+                if not await self._table_exists(conn, fk.table):
                     continue
-                if not self._column_is_uuid(conn, fk.table, fk.column):
+                if not await self._column_is_uuid(conn, fk.table, fk.column):
                     continue
                 constraint_name = f"fk_{fk.table}_{fk.column}_{fk.ref_table}"
-                if self._foreign_key_exists(conn, fk.table, constraint_name):
+                if await self._foreign_key_exists(conn, fk.table, constraint_name):
                     continue
                 ondelete_sql = f" ON DELETE {fk.ondelete}" if fk.ondelete else ""
                 sql = text(
@@ -219,12 +215,12 @@ class LegacyUUIDMigrator:
                     {ondelete_sql}
                     """
                 )
-                conn.execute(sql)
+                await conn.execute(sql)
                 logger.info("foreign_recreated", table=fk.table, column=fk.column)
 
-    def _record_migration(self) -> None:
-        with self.sync_engine.begin() as conn:
-            conn.execute(
+    async def _record_migration(self) -> None:
+        async with self.engine.begin() as conn:
+            await conn.execute(
                 text(
                     """
                     CREATE TABLE IF NOT EXISTS tsn_schema_migrations (
@@ -234,7 +230,7 @@ class LegacyUUIDMigrator:
                     """
                 )
             )
-            conn.execute(
+            await conn.execute(
                 text(
                     """
                     INSERT INTO tsn_schema_migrations(version, applied_at)
@@ -247,8 +243,8 @@ class LegacyUUIDMigrator:
 
     # --- metadata helpers ---------------------------------------------------
 
-    def _table_exists(self, conn: Connection, table: str) -> bool:
-        result = conn.execute(
+    async def _table_exists(self, conn: AsyncConnection, table: str) -> bool:
+        result = await conn.execute(
             text(
                 """
                 SELECT 1 FROM INFORMATION_SCHEMA.TABLES
@@ -256,11 +252,11 @@ class LegacyUUIDMigrator:
                 """
             ),
             {"schema": self.schema, "table": table},
-        ).scalar()
-        return bool(result)
+        )
+        return bool(result.scalar())
 
-    def _column_exists(self, conn: Connection, table: str, column: str) -> bool:
-        result = conn.execute(
+    async def _column_exists(self, conn: AsyncConnection, table: str, column: str) -> bool:
+        result = await conn.execute(
             text(
                 """
                 SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
@@ -270,29 +266,13 @@ class LegacyUUIDMigrator:
                 """
             ),
             {"schema": self.schema, "table": table, "column": column},
-        ).scalar()
-        return bool(result)
+        )
+        return bool(result.scalar())
 
-    def _get_column_type(self, table: str, column: str) -> str | None:
-        with self.sync_engine.begin() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT COLUMN_TYPE
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = :schema
-                      AND TABLE_NAME = :table
-                      AND COLUMN_NAME = :column
-                    """
-                ),
-                {"schema": self.schema, "table": table, "column": column},
-            ).scalar()
-            return row
-
-    def _column_is_uuid(self, conn: Connection, table: str, column: str) -> bool:
-        if not self._column_exists(conn, table, column):
-            return False
-        column_type = conn.execute(
+    async def _get_column_type(self, conn: AsyncConnection, table: str, column: str) -> str | None:
+        if not await self._table_exists(conn, table):
+            return None
+        result = await conn.execute(
             text(
                 """
                 SELECT COLUMN_TYPE
@@ -303,16 +283,34 @@ class LegacyUUIDMigrator:
                 """
             ),
             {"schema": self.schema, "table": table, "column": column},
-        ).scalar()
+        )
+        return result.scalar_one_or_none()
+
+    async def _column_is_uuid(self, conn: AsyncConnection, table: str, column: str) -> bool:
+        if not await self._column_exists(conn, table, column):
+            return False
+        result = await conn.execute(
+            text(
+                """
+                SELECT COLUMN_TYPE
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = :schema
+                  AND TABLE_NAME = :table
+                  AND COLUMN_NAME = :column
+                """
+            ),
+            {"schema": self.schema, "table": table, "column": column},
+        )
+        column_type = result.scalar()
         return bool(column_type and "char(36" in column_type.lower())
 
-    def _ensure_column(self, conn: Connection, table: str, column: str, definition: str) -> None:
-        if self._column_exists(conn, table, column):
+    async def _ensure_column(self, conn: AsyncConnection, table: str, column: str, definition: str) -> None:
+        if await self._column_exists(conn, table, column):
             return
-        conn.execute(text(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}"))
+        await conn.execute(text(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}"))
 
-    def _drop_foreign_keys_for_column(self, conn: Connection, table: str, column: str) -> None:
-        rows = conn.execute(
+    async def _drop_foreign_keys_for_column(self, conn: AsyncConnection, table: str, column: str) -> None:
+        result = await conn.execute(
             text(
                 """
                 SELECT CONSTRAINT_NAME
@@ -324,13 +322,13 @@ class LegacyUUIDMigrator:
                 """
             ),
             {"schema": self.schema, "table": table, "column": column},
-        ).fetchall()
-        for (constraint_name,) in rows:
-            conn.execute(text(f"ALTER TABLE `{table}` DROP FOREIGN KEY `{constraint_name}`"))
+        )
+        for (constraint_name,) in result.fetchall():
+            await conn.execute(text(f"ALTER TABLE `{table}` DROP FOREIGN KEY `{constraint_name}`"))
             logger.info("foreign_dropped", table=table, constraint=constraint_name)
 
-    def _record_and_drop_indexes(self, conn: Connection, table: str, column: str) -> None:
-        rows = conn.execute(
+    async def _record_and_drop_indexes(self, conn: AsyncConnection, table: str, column: str) -> None:
+        result = await conn.execute(
             text(
                 """
                 SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME
@@ -342,7 +340,8 @@ class LegacyUUIDMigrator:
                 """
             ),
             {"schema": self.schema, "table": table, "column": column},
-        ).fetchall()
+        )
+        rows = result.fetchall()
         if not rows:
             return
         grouped: Dict[str, dict] = {}
@@ -363,11 +362,11 @@ class LegacyUUIDMigrator:
                     columns=ordered_columns,
                     unique=meta["unique"],
                 )
-            conn.execute(text(f"ALTER TABLE `{table}` DROP INDEX `{index_name}`"))
+            await conn.execute(text(f"ALTER TABLE `{table}` DROP INDEX `{index_name}`"))
             logger.info("index_dropped", table=table, index=index_name)
 
-    def _foreign_key_exists(self, conn: Connection, table: str, constraint: str) -> bool:
-        row = conn.execute(
+    async def _foreign_key_exists(self, conn: AsyncConnection, table: str, constraint: str) -> bool:
+        result = await conn.execute(
             text(
                 """
                 SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
@@ -378,15 +377,15 @@ class LegacyUUIDMigrator:
                 """
             ),
             {"schema": self.schema, "table": table, "constraint": constraint},
-        ).scalar()
-        return bool(row)
+        )
+        return bool(result.scalar())
 
 
 async def async_main() -> None:
     settings = get_settings()
     setup_logging(settings.logging)
     migrator = LegacyUUIDMigrator()
-    migrator.run()
+    await migrator.run()
     await close_engine()
 
 
