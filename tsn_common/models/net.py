@@ -49,7 +49,7 @@ class NetSession(Base):
 
     # Timing
     start_time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
+        DateTime(timezone=True), nullable=False
     )
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     duration_sec: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -225,6 +225,7 @@ class LegacyUUIDMigrator:
                         rows_without_uuid=remaining,
                     )
                     continue
+                await self._drop_referencing_foreign_keys(conn, table)
                 await self._record_and_drop_indexes(conn, table, "id")
                 if await self._column_has_auto_increment(conn, table, "id"):
                     column_type = await self._get_column_type(conn, table, "id")
@@ -426,6 +427,36 @@ class LegacyUUIDMigrator:
         for (constraint_name,) in result.fetchall():
             await conn.execute(text(f"ALTER TABLE `{table}` DROP FOREIGN KEY `{constraint_name}`"))
             logger.info("foreign_dropped", table=table, constraint=constraint_name)
+
+    async def _drop_referencing_foreign_keys(self, conn: AsyncConnection, table: str) -> None:
+        result = await conn.execute(
+            text(
+                """
+                SELECT k.TABLE_NAME, k.CONSTRAINT_NAME
+                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
+                JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS c
+                  ON c.CONSTRAINT_NAME = k.CONSTRAINT_NAME
+                 AND c.TABLE_NAME = k.TABLE_NAME
+                 AND c.TABLE_SCHEMA = k.TABLE_SCHEMA
+                WHERE k.TABLE_SCHEMA = :schema
+                  AND k.REFERENCED_TABLE_NAME = :table
+                  AND c.CONSTRAINT_TYPE = 'FOREIGN KEY'
+                GROUP BY k.TABLE_NAME, k.CONSTRAINT_NAME
+                """
+            ),
+            {"schema": self.schema, "table": table},
+        )
+        rows = result.fetchall()
+        if not rows:
+            return
+        for child_table, constraint_name in rows:
+            await conn.execute(text(f"ALTER TABLE `{child_table}` DROP FOREIGN KEY `{constraint_name}`"))
+            logger.info(
+                "foreign_dropped_parent",
+                child_table=child_table,
+                constraint=constraint_name,
+                referenced_table=table,
+            )
 
     async def _record_and_drop_indexes(self, conn: AsyncConnection, table: str, column: str) -> None:
         supports_visibility = await self._database_supports_index_visibility(conn)

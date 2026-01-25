@@ -1,7 +1,5 @@
 # TSN v2 - Docker Compose Deployment
 
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
