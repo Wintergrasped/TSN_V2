@@ -77,6 +77,7 @@ class LegacyUUIDMigrator:
         self.schema = settings.database.name
         self.engine: AsyncEngine = get_engine()
         self.index_definitions: Dict[tuple[str, str], IndexDefinition] = {}
+        self._supports_index_visibility: bool | None = None
 
     async def run(self) -> None:
         if not await self._needs_migration():
@@ -427,10 +428,12 @@ class LegacyUUIDMigrator:
             logger.info("foreign_dropped", table=table, constraint=constraint_name)
 
     async def _record_and_drop_indexes(self, conn: AsyncConnection, table: str, column: str) -> None:
+        supports_visibility = await self._database_supports_index_visibility(conn)
+        visibility_select = ", IS_VISIBLE" if supports_visibility else ""
         result = await conn.execute(
             text(
-                """
-                SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, INDEX_TYPE, IS_VISIBLE
+                f"""
+                SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, INDEX_TYPE{visibility_select}
                 FROM INFORMATION_SCHEMA.STATISTICS
                 WHERE TABLE_SCHEMA = :schema
                   AND TABLE_NAME = :table
@@ -444,7 +447,12 @@ class LegacyUUIDMigrator:
         if not rows:
             return
         grouped: Dict[str, dict] = {}
-        for index_name, non_unique, seq, col, sub_part, index_type, is_visible in rows:
+        for row in rows:
+            if supports_visibility:
+                index_name, non_unique, seq, col, sub_part, index_type, is_visible = row
+            else:
+                index_name, non_unique, seq, col, sub_part, index_type = row
+                is_visible = None
             if index_name == "PRIMARY":
                 continue
             if index_name not in grouped:
@@ -452,7 +460,7 @@ class LegacyUUIDMigrator:
                     "columns": [],
                     "unique": not bool(non_unique),
                     "index_type": index_type,
-                    "visible": None if is_visible is None else is_visible.upper() == "YES",
+                    "visible": None if is_visible is None else str(is_visible).upper() == "YES",
                 }
             grouped[index_name]["columns"].append((seq, col, sub_part))
         for index_name, meta in grouped.items():
@@ -584,6 +592,23 @@ class LegacyUUIDMigrator:
             {"schema": self.schema, "table": table},
         )
         return bool(result.scalar())
+
+    async def _database_supports_index_visibility(self, conn: AsyncConnection) -> bool:
+        if self._supports_index_visibility is not None:
+            return self._supports_index_visibility
+        result = await conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = 'information_schema'
+                  AND TABLE_NAME = 'STATISTICS'
+                  AND COLUMN_NAME = 'IS_VISIBLE'
+                """
+            )
+        )
+        self._supports_index_visibility = bool(result.scalar())
+        return self._supports_index_visibility
 
     async def _migration_already_recorded(self, conn: AsyncConnection) -> bool:
         if not await self._table_exists(conn, "tsn_schema_migrations"):
