@@ -10,7 +10,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tsn_common.config import get_settings
+from tsn_common.config import ServerSettings, get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
 from tsn_common.models import AudioFile, AudioFileState
@@ -31,15 +31,18 @@ class IngestionService:
     5. Update state to queued_transcription
     """
 
-    def __init__(self, incoming_dir: Path, storage_dir: Path):
-        self.incoming_dir = incoming_dir
+    def __init__(self, server_settings: ServerSettings, storage_dir: Path):
+        self.settings = server_settings
+        self.incoming_dir = server_settings.incoming_dir
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self.poll_interval = server_settings.poll_interval_sec
         
         logger.info(
             "ingestion_service_initialized",
-            incoming_dir=str(incoming_dir),
-            storage_dir=str(storage_dir),
+            incoming_dir=str(self.incoming_dir),
+            storage_dir=str(self.storage_dir),
+            poll_interval_sec=self.poll_interval,
         )
 
     async def check_duplicate(
@@ -200,25 +203,26 @@ class IngestionService:
         
         return processed
 
-    async def run_loop(self, interval_sec: float = 5.0) -> None:
+    async def run_loop(self, interval_sec: float | None = None) -> None:
         """
         Run continuous ingestion loop.
         
         Args:
             interval_sec: Polling interval in seconds
         """
-        logger.info("ingestion_loop_started", interval_sec=interval_sec)
+        interval = interval_sec or self.poll_interval
+        logger.info("ingestion_loop_started", interval_sec=interval)
         
         while True:
             try:
                 await self.process_incoming_files()
-                await asyncio.sleep(interval_sec)
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 logger.info("ingestion_loop_cancelled")
                 break
             except Exception as e:
                 logger.error("ingestion_loop_error", error=str(e), exc_info=True)
-                await asyncio.sleep(interval_sec)
+                await asyncio.sleep(interval)
 
 
 async def main() -> None:
@@ -229,10 +233,7 @@ async def main() -> None:
     setup_logging(settings.logging)
     
     # Create ingestion service
-    incoming_dir = Path("/path/to/incoming")  # TODO: from config
-    storage_dir = Path("/path/to/storage")    # TODO: from config
-    
-    service = IngestionService(incoming_dir, storage_dir)
+    service = IngestionService(settings.server, settings.storage.base_path)
     await service.run_loop()
 
 

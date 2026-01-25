@@ -34,10 +34,10 @@ services:
         condition: service_healthy
     environment:
       # Database
-      TSN_DB_HOST: postgres
-      TSN_DB_PORT: 5432
-      TSN_DB_NAME: tsn
-      TSN_DB_USER: tsn_user
+      TSN_DB_HOST: 51.81.202.9
+      TSN_DB_PORT: 3306
+      TSN_DB_NAME: repeater
+      TSN_DB_USER: server
       TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
       
       # Server
@@ -89,10 +89,10 @@ services:
     profiles: ["node"]  # Only start with --profile node
     environment:
       # Database
-      TSN_DB_HOST: postgres
-      TSN_DB_PORT: 5432
-      TSN_DB_NAME: tsn
-      TSN_DB_USER: tsn_user
+      TSN_DB_HOST: 51.81.202.9
+      TSN_DB_PORT: 3306
+      TSN_DB_NAME: repeater
+      TSN_DB_USER: server
       TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
       
       # Node
@@ -103,7 +103,7 @@ services:
       TSN_NODE_AUDIO_ARCHIVE_DIR: /node/archive
       
       # SFTP
-      TSN_NODE_SFTP_HOST: tsn_server
+      TSN_NODE_SFTP_HOST: 192.168.0.104
       TSN_NODE_SFTP_PORT: 22
       TSN_NODE_SFTP_USERNAME: ${TSN_NODE_SFTP_USERNAME}
       TSN_NODE_SFTP_PASSWORD: ${TSN_NODE_SFTP_PASSWORD}
