@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote_plus
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -189,15 +189,26 @@ class ServerSettings(BaseSettings):
     """Server-side settings."""
 
     enabled: bool = Field(default=True, description="Enable server services")
-    incoming_dir: Path = Field(description="Directory for incoming files from nodes")
+    incoming_dir: Path | None = Field(
+        default=None,
+        description="Directory for incoming files from nodes",
+    )
     poll_interval_sec: float = Field(default=5.0, description="Ingestion poll interval")
 
     @field_validator("incoming_dir")
     @classmethod
-    def validate_directory(cls, v: Path) -> Path:
+    def validate_directory(cls, v: Path | None) -> Path | None:
+        if v is None:
+            return None
         if not v.exists():
             v.mkdir(parents=True, exist_ok=True)
         return v
+
+    @model_validator(mode="after")
+    def ensure_required_fields(self) -> "ServerSettings":
+        if self.enabled and self.incoming_dir is None:
+            raise ValueError("incoming_dir is required when TSN_SERVER_ENABLED is true")
+        return self
 
     model_config = SettingsConfigDict(env_prefix="TSN_SERVER_")
 
