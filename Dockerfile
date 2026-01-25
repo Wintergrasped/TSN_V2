@@ -38,7 +38,12 @@ COPY tsn_cli/ ./tsn_cli/
 FROM base as torch-base
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install torch>=2.1 --index-url https://download.pytorch.org/whl/cu118
+    pip install --index-url https://download.pytorch.org/whl/cu124 \
+        torch==2.4.1 \
+    && pip install \
+        nvidia-cublas-cu12==12.4.5.8 \
+        nvidia-cuda-runtime-cu12==12.4.127 \
+        nvidia-cudnn-cu12==9.1.0.70
 
 # Server target (includes transcription and analysis)
 FROM torch-base as server

@@ -96,7 +96,10 @@ class TranscriptionSettings(BaseSettings):
 
     backend: Literal["faster-whisper", "whisper.cpp", "openai"] = "faster-whisper"
     model: str = Field(default="medium.en", description="Whisper model name")
-    device: str = Field(default="cuda", description="Device: cuda, cpu, auto")
+    device: Literal["cuda", "cpu", "auto"] = Field(
+        default="auto",
+        description="Device preference: cuda, cpu, or auto-detect",
+    )
     compute_type: str = Field(default="float16", description="Compute type for faster-whisper")
     language: str = Field(default="en", description="Language code")
 
