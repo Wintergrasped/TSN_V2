@@ -1,5 +1,7 @@
 # TSN v2 Dockerfile
 
+#Removed the No Cache layer to reduce image size and build time.
+
 # Base image with Python 3.11
 FROM python:3.11-slim as base
 
@@ -23,7 +25,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -e .
+RUN pip install -e .
 
 # Copy source code
 COPY tsn_common/ ./tsn_common/
@@ -33,7 +35,7 @@ COPY tsn_cli/ ./tsn_cli/
 FROM base as server
 
 # Install GPU dependencies
-RUN pip install --no-cache-dir torch>=2.1 --index-url https://download.pytorch.org/whl/cu118
+RUN pip install torch>=2.1 --index-url https://download.pytorch.org/whl/cu118
 
 # Copy server code
 COPY tsn_server/ ./tsn_server/
