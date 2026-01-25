@@ -123,7 +123,7 @@ class CallsignLog(Base):
 
     # Detection metadata
     detected_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
+        DateTime(timezone=True), nullable=False
     )
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     context_snippet: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -170,7 +170,7 @@ class CallsignTopic(Base):
 
     # Timestamp
     detected_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
+        DateTime(timezone=True), nullable=False
     )
 
     # Relationships
