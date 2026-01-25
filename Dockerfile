@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.6
 # TSN v2 Dockerfile
 
 #Removed the No Cache layer to reduce image size and build time.
@@ -5,14 +6,16 @@
 # Base image with Python 3.11
 FROM python:3.11-slim as base
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    git \
-    libsndfile1 \
-    ffmpeg \
-    curl \
+# Install system dependencies (cached)
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        git \
+        libsndfile1 \
+        ffmpeg \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Avoid large wheel download timeouts during pip install
@@ -24,18 +27,21 @@ WORKDIR /app
 # Copy requirements
 COPY pyproject.toml README.md ./
 
-# Install Python dependencies
-RUN pip install -e .
+# Install Python dependencies with cached wheels
+RUN --mount=type=cache,target=/root/.cache/pip pip install -e .
 
 # Copy source code
 COPY tsn_common/ ./tsn_common/
 COPY tsn_cli/ ./tsn_cli/
 
-# Server target (includes transcription and analysis)
-FROM base as server
+# Torch base to avoid re-downloading CUDA wheels
+FROM base as torch-base
 
-# Install GPU dependencies
-RUN pip install torch>=2.1 --index-url https://download.pytorch.org/whl/cu118
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch>=2.1 --index-url https://download.pytorch.org/whl/cu118
+
+# Server target (includes transcription and analysis)
+FROM torch-base as server
 
 # Copy server code
 COPY tsn_server/ ./tsn_server/
