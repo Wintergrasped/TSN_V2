@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Net Sessions{% endblock %}
+{% block content %}
+<h2>Organized Nets</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Club</th>
+            <th>Start</th>
+            <th>Duration (min)</th>
+            <th>Participants</th>
+            <th>Confidence</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for net in nets %}
+        <tr>
+            <td>{{ net.name }}</td>
+            <td>{{ net.club or '—' }}</td>
+            <td>{{ net.start_time }}</td>
+            <td>{{ net.duration_sec // 60 }}</td>
+            <td>{{ net.participants }}</td>
+            <td>{{ '{:.0%}'.format(net.confidence) if net.confidence else '—' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

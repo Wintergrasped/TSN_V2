@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ brand_name }} · {% block title %}Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/main.css" />
+    <script defer src="/static/js/main.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <div>
+            <h1>{{ brand_name }} Network</h1>
+            <p class="tagline">Open repeater intelligence for the Pacific Northwest</p>
+        </div>
+        <nav>
+            <a href="/">Overview</a>
+            <a href="/callsigns">Callsigns</a>
+            <a href="/nets">Nets</a>
+            <a href="/transcriptions">Transcriptions</a>
+            <a href="/clubs">Clubs</a>
+            <a href="/health">Health</a>
+            {% if current_user %}
+                <a href="/user/dashboard">My Space</a>
+                <form method="post" action="/logout">
+                    <button class="ghost">Logout</button>
+                </form>
+            {% else %}
+                <a href="/login">Sign in</a>
+            {% endif %}
+        </nav>
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <small>Powered by TSN • Need help? <a href="mailto:{{ support_email }}">{{ support_email }}</a></small>
+    </footer>
+</body>
+</html>

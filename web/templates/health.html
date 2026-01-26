@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}System Health{% endblock %}
+{% block content %}
+<h2>Service Components</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Component</th>
+            <th>Status</th>
+            <th>Heartbeat</th>
+            <th>CPU%</th>
+            <th>Memory MB</th>
+            <th>Disk GB</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for component in health %}
+        <tr>
+            <td>{{ component.component }}</td>
+            <td>{{ component.status }}</td>
+            <td>{{ component.last_heartbeat }}</td>
+            <td>{{ component.cpu_percent or '—' }}</td>
+            <td>{{ component.memory_mb or '—' }}</td>
+            <td>{{ component.disk_free_gb or '—' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

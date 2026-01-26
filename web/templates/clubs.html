@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Club Profiles{% endblock %}
+{% block content %}
+<h2>Clubs & Organizations</h2>
+<div class="grid">
+    {% for club in clubs %}
+        <article class="card">
+            <h3>{{ club.name }}</h3>
+            <p>{{ club.summary or 'No narrative yet.' }}</p>
+            <p class="muted">Schedule: {{ club.schedule or 'n/a' }}</p>
+            <p class="muted">Members tracked: {{ club.members or 'unknown' }}</p>
+        </article>
+    {% endfor %}
+</div>
+{% endblock %}

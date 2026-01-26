@@ -58,6 +58,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "typer>=0.9",
     "rich>=13.7",
+    "passlib[bcrypt]>=1.7",
 ]
 
 [project.optional-dependencies]

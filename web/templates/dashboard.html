@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Activity{% endblock %}
+{% block content %}
+<section class="grid">
+    <article>
+        <h2>Queue Depth</h2>
+        <div class="stat-block">
+            <div class="number">{{ payload.queue.total }}</div>
+            <p>Total audio artifacts in pipeline</p>
+        </div>
+        <ul class="pill-list">
+            {% for state, count in payload.queue.states.items() %}
+                <li><span>{{ state }}</span><strong>{{ count }}</strong></li>
+            {% endfor %}
+        </ul>
+    </article>
+    <article>
+        <h2>Trending Topics</h2>
+        {% if payload.trends %}
+            {% for trend in payload.trends[:1] %}
+                <p class="muted">{{ trend.window_start }} → {{ trend.window_end }}</p>
+                <div class="chip-row">
+                    {% for topic in trend.topics %}
+                        <span class="chip">{{ topic }}</span>
+                    {% endfor %}
+                </div>
+                <div class="chip-row">
+                    {% for cs in trend.callsigns %}
+                        <span class="chip alt">{{ cs }}</span>
+                    {% endfor %}
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>No snapshots yet.</p>
+        {% endif %}
+    </article>
+    <article>
+        <h2>System Health</h2>
+        <ul class="health-list">
+            {% for component in payload.health %}
+                <li>
+                    <span>{{ component.component }}</span>
+                    <strong class="status {{ component.status }}">{{ component.status }}</strong>
+                </li>
+            {% endfor %}
+        </ul>
+    </article>
+</section>
+
+<section>
+    <h2>Recent Callsigns</h2>
+    <table>
+        <thead>
+            <tr><th>Callsign</th><th>Last Seen</th><th>Mentions</th><th>Validated</th></tr>
+        </thead>
+        <tbody>
+            {% for cs in payload.callsigns %}
+            <tr>
+                <td>{{ cs.callsign }}</td>
+                <td>{{ cs.last_seen }}</td>
+                <td>{{ cs.seen_count }}</td>
+                <td>{{ '✔' if cs.validated else '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<section class="grid">
+    <article>
+        <h2>Latest Transcriptions</h2>
+        {% for tx in payload.transcriptions %}
+            <div class="card">
+                <p class="muted">ID {{ tx.id }}</p>
+                <p>{{ tx.preview }}{% if tx.preview|length == 280 %}…{% endif %}</p>
+            </div>
+        {% endfor %}
+    </article>
+    <article>
+        <h2>Net Sessions</h2>
+        <ul class="net-list">
+            {% for net in payload.nets %}
+                <li>
+                    <span>
+                        <strong>{{ net.name }}</strong>
+                        <small>{{ net.start_time }} • {{ net.duration_sec // 60 }} min</small>
+                    </span>
+                    <span>{{ net.participants }} ops</span>
+                </li>
+            {% endfor %}
+        </ul>
+    </article>
+    <article>
+        <h2>Club Profiles</h2>
+        {% for club in payload.clubs %}
+            <div class="card">
+                <strong>{{ club.name }}</strong>
+                <p>{{ club.summary or 'Awaiting summary' }}</p>
+            </div>
+        {% endfor %}
+    </article>
+</section>
+{% endblock %}

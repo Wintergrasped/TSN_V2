@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Callsign Directory{% endblock %}
+{% block content %}
+<h2>Active Callsigns</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Callsign</th>
+            <th>First Heard</th>
+            <th>Last Heard</th>
+            <th>Mentions</th>
+            <th>Status</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for cs in callsigns %}
+        <tr>
+            <td>{{ cs.callsign }}</td>
+            <td>{{ cs.first_seen }}</td>
+            <td>{{ cs.last_seen }}</td>
+            <td>{{ cs.seen_count }}</td>
+            <td>{{ 'Validated' if cs.validated else 'Unverified' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h3>Trend Snapshots</h3>
+<div class="grid">
+    {% for trend in trends %}
+    <article>
+        <p class="muted">{{ trend.window_start }} → {{ trend.window_end }}</p>
+        <div class="chip-row">
+            {% for topic in trend.topics %}
+                <span class="chip">{{ topic }}</span>
+            {% endfor %}
+        </div>
+    </article>
+    {% endfor %}
+</div>
+{% endblock %}
