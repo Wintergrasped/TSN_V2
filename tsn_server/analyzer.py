@@ -1,17 +1,23 @@
 """
-Analyzer - extracts topics, detects nets, and generates profiles using vLLM.
+Analyzer - batches transcripts and drives deep analysis via vLLM.
+Uses the full 32k-context window to detect nets, build profiles, surface clubs,
+
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Optional
+import uuid
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Sequence
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
 
-from tsn_common.config import VLLMSettings, get_settings
+from tsn_common.config import AnalysisSettings, VLLMSettings, get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
 from tsn_common.models import (
@@ -22,566 +28,663 @@ from tsn_common.models import (
     CallsignProfile,
     CallsignTopic,
     CheckinType,
+    ClubMembership,
+    ClubProfile,
+    ClubRole,
     NetParticipation,
     NetSession,
+    TrendSnapshot,
     Transcription,
 )
+from tsn_common.utils import normalize_callsign
 
 logger = get_logger(__name__)
 
 
-class TranscriptAnalyzer:
-    """
-    Analyzes transcripts using vLLM for topics, nets, and profiles.
-    """
+@dataclass
+class ContextEntry:
+    """Lightweight snapshot of an audio/transcription pair for prompting."""
 
-    def __init__(self, settings: VLLMSettings):
-        self.settings = settings
-        self.http_client = httpx.AsyncClient(timeout=settings.timeout_sec)
-        
+    index: int
+    audio_id: uuid.UUID
+    audio_filename: str
+    audio_created_at: datetime
+    audio_duration_sec: float | None
+    transcription_id: uuid.UUID
+    transcript_text: str
+    callsigns: list[str]
+    snippet: str = ""
+
+
+class TranscriptAnalyzer:
+    """Analyzes batches of transcripts using vLLM with prioritization controls."""
+
+    def __init__(self, vllm_settings: VLLMSettings, analysis_settings: AnalysisSettings):
+        self.vllm_settings = vllm_settings
+        self.analysis_settings = analysis_settings
+        self.http_client = httpx.AsyncClient(timeout=vllm_settings.timeout_sec)
+
         logger.info(
             "analyzer_initialized",
-            vllm_url=settings.base_url,
-            model=settings.model,
+            vllm_url=vllm_settings.base_url,
+            model=vllm_settings.model,
+            analysis_workers=analysis_settings.worker_count,
+            batch_size=analysis_settings.max_batch_size,
         )
 
     async def close(self) -> None:
-        """Close HTTP client."""
         await self.http_client.aclose()
 
-    async def call_vllm(self, prompt: str, max_tokens: int = 1000) -> str:
-        """
-        Call vLLM API.
-        
-        Args:
-            prompt: User prompt
-            max_tokens: Maximum response tokens
-            
-        Returns:
-            Response content
-        """
+    async def _should_pause_for_transcription(self) -> bool:
+        """Return True when transcription/extraction backlog should pre-empt analysis."""
+        threshold = self.analysis_settings.transcription_backlog_pause
+        if threshold <= 0:
+            return False
+
+        async with get_session() as session:
+            backlog_states = (
+                AudioFileState.QUEUED_TRANSCRIPTION,
+                AudioFileState.TRANSCRIBING,
+                AudioFileState.QUEUED_EXTRACTION,
+                AudioFileState.EXTRACTING,
+            )
+            result = await session.execute(
+                select(func.count(AudioFile.id)).where(AudioFile.state.in_(backlog_states))
+            )
+            backlog = result.scalar_one()
+
+        if backlog >= threshold:
+            logger.debug(
+                "analysis_paused_for_transcription",
+                backlog=backlog,
+                threshold=threshold,
+            )
+            return True
+        return False
+
+    async def _load_callsign_strings(self, transcription_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
+        if not transcription_ids:
+            return {}
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(Callsign.callsign, CallsignLog.transcription_id)
+                .join(CallsignLog, CallsignLog.callsign_id == Callsign.id)
+                .where(CallsignLog.transcription_id.in_(transcription_ids))
+            )
+
+            mapping: dict[uuid.UUID, list[str]] = defaultdict(list)
+            for callsign, transcription_id in result.all():
+                mapping[transcription_id].append(callsign)
+
+        return mapping
+
+    async def _reserve_batch(self) -> list[ContextEntry]:
+        """Reserve the next batch of audio/transcription pairs for analysis."""
+        async with get_session() as session:
+            result = await session.execute(
+                select(AudioFile, Transcription)
+                .join(Transcription, AudioFile.id == Transcription.audio_file_id)
+                .where(AudioFile.state == AudioFileState.QUEUED_ANALYSIS)
+                .order_by(AudioFile.created_at)
+                .limit(self.analysis_settings.max_batch_size)
+                .with_for_update(skip_locked=True)
+            )
+            rows = result.all()
+
+            if not rows:
+                return []
+
+            for audio_file, _ in rows:
+                audio_file.state = AudioFileState.ANALYZING
+            await session.flush()
+
+        callsign_map = await self._load_callsign_strings([t.id for _, t in rows])
+
+        contexts: list[ContextEntry] = []
+        for idx, (audio_file, transcription) in enumerate(rows, start=1):
+            contexts.append(
+                ContextEntry(
+                    index=idx,
+                    audio_id=audio_file.id,
+                    audio_filename=audio_file.filename,
+                    audio_created_at=audio_file.created_at,
+                    audio_duration_sec=audio_file.duration_sec,
+                    transcription_id=transcription.id,
+                    transcript_text=transcription.transcript_text,
+                    callsigns=callsign_map.get(transcription.id, []),
+                )
+            )
+
+        return contexts
+
+    def _build_context_block(self, contexts: list[ContextEntry]) -> tuple[list[ContextEntry], str]:
+        """Trim transcripts into the configured context budget and build prompt text."""
+        if not contexts:
+            return [], ""
+
+        remaining = max(self.analysis_settings.context_char_budget, 2000)
+        included: list[ContextEntry] = []
+        block_parts: list[str] = []
+
+        for ctx in contexts:
+            header = (
+                f"### TRANSCRIPT {len(included) + 1}\n"
+                f"Filename: {ctx.audio_filename}\n"
+                f"Captured: {ctx.audio_created_at.isoformat()}\n"
+                f"Duration(sec): {ctx.audio_duration_sec or 'unknown'}\n"
+                f"Detected Callsigns: {', '.join(ctx.callsigns) or 'Unknown'}\n"
+                "---\n"
+            )
+            body = ctx.transcript_text.strip()
+            budget_for_body = remaining - len(header) - 1
+
+            if budget_for_body <= 0:
+                break
+
+            snippet = body if len(body) <= budget_for_body else body[:budget_for_body]
+            ctx.index = len(included) + 1
+            ctx.snippet = snippet
+            included.append(ctx)
+            block_parts.append(f"{header}{snippet}\n")
+            remaining -= len(header) + len(snippet) + 1
+
+            if remaining <= 500:  # leave room for instructions
+                break
+
+        return included, "".join(block_parts)
+
+    async def call_vllm(self, prompt: str) -> str:
+        """Call the vLLM server with the constructed prompt."""
         try:
             response = await self.http_client.post(
-                f"{self.settings.base_url}/chat/completions",
+                f"{self.vllm_settings.base_url}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {self.settings.api_key.get_secret_value()}",
+                    "Authorization": f"Bearer {self.vllm_settings.api_key.get_secret_value()}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": self.settings.model,
+                    "model": self.vllm_settings.model,
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are an expert at analyzing amateur radio conversations.",
+                            "content": (
+                                "You are an expert amateur radio analyst. Use the entire"
+                                " context to detect nets, clubs, operator behavior, and"
+                                " emerging topics. Respond with strict JSON only."
+                            ),
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": 0.3,
-                    "max_tokens": max_tokens,
+                    "temperature": 0.2,
+                    "max_tokens": self.analysis_settings.max_response_tokens,
                     "response_format": {"type": "json_object"},
                 },
             )
-            
             response.raise_for_status()
             data = response.json()
-            
             return data["choices"][0]["message"]["content"]
-            
-        except Exception as e:
-            logger.error(
-                "vllm_call_failed",
-                error=str(e),
-                prompt_length=len(prompt),
-            )
+        except Exception as exc:  # pragma: no cover - network heavy
+            logger.error("vllm_call_failed", error=str(exc), prompt_size=len(prompt))
             raise
 
-    async def extract_topics(
-        self,
-        transcription: Transcription,
-        callsigns: list[Callsign],
-    ) -> list[str]:
-        """
-        Extract discussion topics from transcript.
-        
-        Args:
-            transcription: Transcription record
-            callsigns: List of callsigns mentioned
-            
-        Returns:
-            List of topic strings
-        """
-        callsign_list = ", ".join(cs.callsign for cs in callsigns[:10])
-        
-        prompt = f"""Analyze this amateur radio conversation transcript and extract the main topics discussed.
+    def _build_prompt(self, context_block: str) -> str:
+        """Build the instruction payload referencing the attached context."""
+        return f"""You have a 32,768-token context window. Consume as much of the
+provided context as needed to keep the analysis GPU saturated.
 
-Callsigns present: {callsign_list}
+CONTEXT START
+{context_block}
+CONTEXT END
 
-Transcript:
-{transcription.transcript_text[:2000]}
+Tasks (minimum requirements):
+1. Net Identification: find organized nets, determine NCS, club ties, roster
+   (normal, late, short time/IO, relay), net type, duration, topics, stats.
+2. Callsign Topic History & Profiles: for every callsign mentioned, summarize
+   favorite topics, recent behavior, whether they were NCS, late, or open-QSO,
+   and surface transcripts where notable traffic occurred.
+3. Club/Organization Detection: identify clubs or groups, their NCS ops, net
+   schedules, and member roles.
+4. Trend Analysis: report topic/callsign trends, anomalies, and noteworthy
+   changes to keep the silicon hot even when live nets are quiet.
 
-Extract 3-5 main topics. Be specific but concise.
-
-Respond with JSON only:
-{{"topics": ["topic1", "topic2", "topic3"]}}"""
-
-        try:
-            response = await self.call_vllm(prompt, max_tokens=500)
-            result = json.loads(response)
-            
-            topics = result.get("topics", [])
-            
-            logger.info(
-                "topics_extracted",
-                transcription_id=str(transcription.id),
-                topic_count=len(topics),
-                topics=topics,
-            )
-            
-            return topics
-            
-        except Exception as e:
-            logger.error(
-                "topic_extraction_failed",
-                transcription_id=str(transcription.id),
-                error=str(e),
-            )
-            return []
-
-    async def detect_net(
-        self,
-        transcription: Transcription,
-        callsigns: list[Callsign],
-    ) -> Optional[dict]:
-        """
-        Detect if transcript is a net session.
-        
-        Args:
-            transcription: Transcription record
-            callsigns: List of callsigns mentioned
-            
-        Returns:
-            Net information dict or None
-        """
-        # Heuristic check first
-        text_lower = transcription.transcript_text.lower()
-        net_keywords = [
-            "check in",
-            "checking in",
-            "net control",
-            "this is the",
-            "traffic",
-            "rag chew",
-        ]
-        
-        has_keywords = any(kw in text_lower for kw in net_keywords)
-        has_multiple_callsigns = len(callsigns) >= 3
-        
-        if not (has_keywords and has_multiple_callsigns):
-            return None
-        
-        # AI confirmation
-        callsign_list = ", ".join(cs.callsign for cs in callsigns[:20])
-        
-        prompt = f"""Analyze if this amateur radio conversation is a net session (organized check-in).
-
-Callsigns present: {callsign_list}
-
-Transcript:
-{transcription.transcript_text[:2000]}
-
-Determine:
-1. Is this a net session? (true/false)
-2. If yes, what is the net name?
-3. Who is the NCS (Net Control Station)?
-4. What type of net? (traffic, rag_chew, emergency, technical, etc.)
-
-Respond with JSON only:
+Respond ONLY with JSON in this schema:
 {{
-  "is_net": true,
-  "net_name": "Evening Rag Chew Net",
-  "ncs_callsign": "W1ABC",
-  "net_type": "rag_chew"
-}}"""
+  "nets": [
+    {{
+      "name": "...",
+      "net_type": "rag_chew|traffic|emergency|technical|other",
+      "club": "optional club name",
+      "ncs": "CALLSIGN",
+      "summary": "one paragraph",
+      "topics": ["..."],
+      "stats": {{
+         "duration_minutes": 0,
+         "checkins": 0,
+         "avg_checkin_length_sec": 0,
+         "confidence": 0.0
+      }},
+      "participants": [
+        {{"callsign": "W1ABC", "checkin_type": "regular|late|io|proxy|relay",
+          "talk_time_sec": 45, "notes": "..."}}
+      ],
+      "sources": [transcript_numbers]
+    }}
+  ],
+  "callsigns": [
+    {{
+      "callsign": "W1ABC",
+      "favorite_topics": ["..."],
+      "net_roles": ["ncs", "participant", "guest"],
+      "open_qso_refs": ["transcript notes"],
+      "profile_summary": "2-3 sentences",
+      "stats": {{"net_checkins": 0, "nets_as_ncs": 0}},
+      "sources": [transcript_numbers]
+    }}
+  ],
+  "clubs": [
+    {{
+      "name": "Club Name",
+      "summary": "...",
+      "schedule": "optional schedule info",
+      "ncs_callsigns": ["CALL1"],
+      "members": [{{"callsign": "CALL", "role": "member|ncs|guest"}}],
+      "related_nets": ["net names"],
+      "sources": [transcript_numbers]
+    }}
+  ],
+  "trends": {{
+     "topics": ["..."],
+     "callsigns": ["..."],
+     "notes": "brief commentary",
+     "window_hours": 4
+  }}
+}}
+"""
 
-        try:
-            response = await self.call_vllm(prompt, max_tokens=300)
-            result = json.loads(response)
-            
-            if result.get("is_net"):
-                logger.info(
-                    "net_detected",
-                    transcription_id=str(transcription.id),
-                    net_name=result.get("net_name"),
-                    ncs=result.get("ncs_callsign"),
-                )
-                return result
-            
-            return None
-            
-        except Exception as e:
-            logger.error(
-                "net_detection_failed",
-                transcription_id=str(transcription.id),
-                error=str(e),
-            )
-            return None
-
-    async def extract_checkins(
-        self,
-        transcription: Transcription,
-        callsigns: list[Callsign],
-        ncs_callsign: Optional[str],
-    ) -> list[tuple[str, CheckinType]]:
-        """
-        Extract check-in roster with types.
-        
-        Args:
-            transcription: Transcription record
-            callsigns: List of callsigns mentioned
-            ncs_callsign: NCS callsign to exclude
-            
-        Returns:
-            List of (callsign, checkin_type) tuples
-        """
-        callsign_list = ", ".join(cs.callsign for cs in callsigns[:20])
-        
-        prompt = f"""Extract the check-in roster from this net transcript.
-
-Callsigns present: {callsign_list}
-NCS: {ncs_callsign or "unknown"}
-
-Transcript:
-{transcription.transcript_text[:2000]}
-
-For each participant (excluding NCS), determine check-in type:
-- regular: Standard check-in
-- relay: Relay check-in through another station
-- late: Late check-in after roster call
-
-Respond with JSON only:
-{{
-  "checkins": [
-    {{"callsign": "W1ABC", "type": "regular"}},
-    {{"callsign": "K2XYZ", "type": "late"}}
-  ]
-}}"""
-
-        try:
-            response = await self.call_vllm(prompt, max_tokens=800)
-            result = json.loads(response)
-            
-            checkins = []
-            for item in result.get("checkins", []):
-                callsign = item.get("callsign", "").upper()
-                checkin_type_str = item.get("type", "regular")
-                
-                try:
-                    checkin_type = CheckinType[checkin_type_str.upper()]
-                except KeyError:
-                    checkin_type = CheckinType.REGULAR
-                
-                if callsign and callsign != ncs_callsign:
-                    checkins.append((callsign, checkin_type))
-            
-            logger.info(
-                "checkins_extracted",
-                transcription_id=str(transcription.id),
-                checkin_count=len(checkins),
-            )
-            
-            return checkins
-            
-        except Exception as e:
-            logger.error(
-                "checkin_extraction_failed",
-                transcription_id=str(transcription.id),
-                error=str(e),
-            )
-            return []
-
-    async def generate_profile_summary(
-        self,
-        callsign: Callsign,
-        recent_transcripts: list[str],
-    ) -> Optional[str]:
-        """
-        Generate AI summary for callsign profile.
-        
-        Args:
-            callsign: Callsign record
-            recent_transcripts: List of recent transcript excerpts
-            
-        Returns:
-            Profile summary text
-        """
-        combined_text = "\n\n".join(recent_transcripts[:5])
-        
-        prompt = f"""Generate a brief profile summary for amateur radio operator {callsign.callsign}.
-
-Recent conversation excerpts:
-{combined_text[:3000]}
-
-Create a 2-3 sentence summary covering:
-- Topics of interest
-- Operating style/personality
-- Technical expertise areas
-
-Respond with JSON only:
-{{"summary": "Brief profile summary here"}}"""
-
-        try:
-            response = await self.call_vllm(prompt, max_tokens=300)
-            result = json.loads(response)
-            
-            summary = result.get("summary", "")
-            
-            logger.info(
-                "profile_generated",
-                callsign=callsign.callsign,
-                summary_length=len(summary),
-            )
-            
-            return summary
-            
-        except Exception as e:
-            logger.error(
-                "profile_generation_failed",
-                callsign=callsign.callsign,
-                error=str(e),
-            )
-            return None
-
-    async def analyze_transcription(
-        self,
-        audio_file: AudioFile,
-        transcription: Transcription,
-    ) -> None:
-        """
-        Perform complete analysis on a transcription.
-        
-        Args:
-            audio_file: AudioFile record
-            transcription: Transcription record
-        """
+    async def _mark_audio_files(self, audio_ids: Sequence[uuid.UUID], state: AudioFileState, failed: bool = False) -> None:
+        if not audio_ids:
+            return
         async with get_session() as session:
-            # Get callsigns from logs
-            result = await session.execute(
-                select(Callsign)
-                .join(CallsignLog, CallsignLog.callsign_id == Callsign.id)
-                .where(CallsignLog.transcription_id == transcription.id)
-                .distinct()
-            )
-            callsigns = list(result.scalars().all())
-            
-            logger.info(
-                "analysis_started",
-                audio_file_id=str(audio_file.id),
-                callsign_count=len(callsigns),
-            )
-        
-        # Extract topics
-        topics = await self.extract_topics(transcription, callsigns)
-        
-        # Store topics
+            for audio_id in audio_ids:
+                record = await session.get(AudioFile, audio_id)
+                if not record:
+                    continue
+                if failed:
+                    record.state = AudioFileState.FAILED_ANALYSIS
+                    record.retry_count += 1
+                else:
+                    record.state = AudioFileState.ANALYZED
+                    record.state = AudioFileState.COMPLETE
+
+    async def _release_unprocessed(self, audio_ids: Sequence[uuid.UUID]) -> None:
+        if not audio_ids:
+            return
         async with get_session() as session:
-            for topic in topics:
-                for callsign in callsigns:
-                    topic_entry = CallsignTopic(
-                        callsign_id=callsign.id,
-                        transcription_id=transcription.id,
-                        topic=topic,
-                        detected_at=datetime.now(timezone.utc),
-                    )
-                    session.add(topic_entry)
-        
-        # Detect net
-        net_info = await self.detect_net(transcription, callsigns)
-        
-        if net_info:
-            async with get_session() as session:
-                # Create net session
+            for audio_id in audio_ids:
+                record = await session.get(AudioFile, audio_id)
+                if record:
+                    record.state = AudioFileState.QUEUED_ANALYSIS
+
+    async def _get_or_create_callsign(self, session, raw_callsign: str) -> Callsign | None:
+        normalized = normalize_callsign(raw_callsign)
+        if not normalized:
+            return None
+
+        result = await session.execute(select(Callsign).where(Callsign.callsign == normalized))
+        record = result.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+
+        if record:
+            record.last_seen = now
+            record.seen_count += 1
+            return record
+
+        record = Callsign(
+            callsign=normalized,
+            validated=False,
+            first_seen=now,
+            last_seen=now,
+            seen_count=1,
+        )
+        session.add(record)
+        await session.flush()
+        return record
+
+    async def _get_or_create_profile(self, session, callsign_id: uuid.UUID) -> CallsignProfile:
+        result = await session.execute(
+            select(CallsignProfile).where(CallsignProfile.callsign_id == callsign_id)
+        )
+        profile = result.scalar_one_or_none()
+        if profile:
+            return profile
+
+        profile = CallsignProfile(callsign_id=callsign_id)
+        session.add(profile)
+        await session.flush()
+        return profile
+
+    async def _get_or_create_club(self, session, name: str) -> ClubProfile:
+        result = await session.execute(select(ClubProfile).where(ClubProfile.name == name))
+        club = result.scalar_one_or_none()
+        if club:
+            return club
+
+        club = ClubProfile(name=name)
+        session.add(club)
+        await session.flush()
+        return club
+
+    async def _get_or_create_membership(self, session, club_id: uuid.UUID, callsign_id: uuid.UUID) -> ClubMembership:
+        result = await session.execute(
+            select(ClubMembership).where(
+                ClubMembership.club_id == club_id,
+                ClubMembership.callsign_id == callsign_id,
+            )
+        )
+        membership = result.scalar_one_or_none()
+        if membership:
+            return membership
+
+        now = datetime.now(timezone.utc)
+        membership = ClubMembership(
+            club_id=club_id,
+            callsign_id=callsign_id,
+            role=ClubRole.MEMBER,
+            first_seen=now,
+            last_seen=now,
+        )
+        session.add(membership)
+        await session.flush()
+        return membership
+
+    def _resolve_context_map(self, contexts: Sequence[ContextEntry]) -> dict[int, ContextEntry]:
+        return {ctx.index: ctx for ctx in contexts}
+
+    def _resolve_transcription_id(self, sources: Sequence[int] | None, context_map: dict[int, ContextEntry]) -> uuid.UUID | None:
+        if sources:
+            for source in sources:
+                ctx = context_map.get(source)
+                if ctx:
+                    return ctx.transcription_id
+        if context_map:
+            return next(iter(context_map.values())).transcription_id
+        return None
+
+    def _effective_duration(self, ctx_list: Sequence[ContextEntry]) -> int:
+        duration = 0
+        for ctx in ctx_list:
+            if ctx.audio_duration_sec:
+                duration += int(ctx.audio_duration_sec)
+            else:
+                # Fallback: ~3.2 words/sec assumption
+                duration += max(30, int(len(ctx.snippet.split()) / 3.2))
+        return max(duration, 1)
+
+    def _safe_checkin_type(self, raw: str | None) -> CheckinType:
+        if not raw:
+            return CheckinType.UNKNOWN
+        normalized = raw.strip().upper()
+        for member in CheckinType:
+            if member.name == normalized or member.value.upper() == normalized:
+                return member
+        return CheckinType.UNKNOWN
+
+    def _safe_club_role(self, raw: str | None) -> ClubRole:
+        if not raw:
+            return ClubRole.MEMBER
+        normalized = raw.strip().upper()
+        for member in ClubRole:
+            if member.name == normalized or member.value.upper() == normalized:
+                return member
+        return ClubRole.MEMBER
+
+    async def _persist_nets(self, nets: list[dict[str, Any]] | None, context_map: dict[int, ContextEntry]) -> None:
+        if not nets:
+            return
+
+        async with get_session() as session:
+            for net in nets:
+                sources_ctx = [context_map[idx] for idx in net.get("sources", []) if idx in context_map]
+                if not sources_ctx:
+                    continue
+
+                start_time = min(ctx.audio_created_at for ctx in sources_ctx)
+                duration_sec = int(net.get("stats", {}).get("duration_minutes", 0) * 60) or self._effective_duration(sources_ctx)
+                end_time = start_time + timedelta(seconds=duration_sec)
+                topics = net.get("topics") or None
+                summary = net.get("summary")
+                statistics = net.get("stats") or {}
+                source_segments = [
+                    {
+                        "transcription_id": str(ctx.transcription_id),
+                        "filename": ctx.audio_filename,
+                        "captured": ctx.audio_created_at.isoformat(),
+                    }
+                    for ctx in sources_ctx
+                ]
+
                 net_session = NetSession(
-                    audio_file_id=audio_file.id,
-                    net_name=net_info.get("net_name", "Unknown Net"),
-                    net_type=net_info.get("net_type", "rag_chew"),
-                    start_time=audio_file.created_at,
+                    net_name=net.get("name", "Unnamed Net"),
+                    net_type=net.get("net_type"),
+                    club_name=net.get("club"),
+                    audio_file_id=sources_ctx[0].audio_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration_sec=duration_sec,
+                    participant_count=len(net.get("participants", [])),
+                    confidence=float(net.get("stats", {}).get("confidence", 0.75)),
+                    summary=summary,
+                    topics=topics,
+                    statistics=statistics,
+                    source_segments=source_segments,
                 )
                 session.add(net_session)
                 await session.flush()
-                
-                # Get NCS callsign
-                ncs_callsign_str = net_info.get("ncs_callsign", "").upper()
-                ncs_callsign = None
-                
-                if ncs_callsign_str:
-                    result = await session.execute(
-                        select(Callsign).where(Callsign.callsign == ncs_callsign_str)
-                    )
-                    ncs_callsign = result.scalar_one_or_none()
-                
-                if ncs_callsign:
-                    net_session.ncs_callsign_id = ncs_callsign.id
-                
-                # Extract checkins
-                checkins = await self.extract_checkins(
-                    transcription,
-                    callsigns,
-                    ncs_callsign_str,
-                )
-                
-                # Store participations
-                for callsign_str, checkin_type in checkins:
-                    result = await session.execute(
-                        select(Callsign).where(Callsign.callsign == callsign_str)
-                    )
-                    callsign = result.scalar_one_or_none()
-                    
-                    if callsign:
-                        participation = NetParticipation(
-                            net_session_id=net_session.id,
-                            callsign_id=callsign.id,
-                            checkin_type=checkin_type,
-                            checkin_time=audio_file.created_at,
-                        )
-                        session.add(participation)
-        
-        # Update profiles for active callsigns
-        for callsign in callsigns[:10]:  # Limit to top 10
-            async with get_session() as session:
-                # Get recent transcripts for this callsign
-                result = await session.execute(
-                    select(Transcription.transcript_text)
-                    .join(CallsignLog, CallsignLog.transcription_id == Transcription.id)
-                    .where(CallsignLog.callsign_id == callsign.id)
-                    .order_by(CallsignLog.detected_at.desc())
-                    .limit(5)
-                )
-                recent_texts = [row[0][:500] for row in result.all()]
-                
-                if recent_texts:
-                    summary = await self.generate_profile_summary(callsign, recent_texts)
-                    
-                    if summary:
-                        # Get or create profile
-                        result = await session.execute(
-                            select(CallsignProfile).where(
-                                CallsignProfile.callsign_id == callsign.id
-                            )
-                        )
-                        profile = result.scalar_one_or_none()
-                        
-                        if profile:
-                            profile.ai_summary = summary
-                            profile.last_updated = datetime.now(timezone.utc)
-                        else:
-                            profile = CallsignProfile(
-                                callsign_id=callsign.id,
-                                ai_summary=summary,
-                            )
-                            session.add(profile)
 
-    async def get_next_audio_file(
-        self,
-        session: AsyncSession,
-    ) -> Optional[tuple[AudioFile, Transcription]]:
-        """Get next file to analyze."""
-        result = await session.execute(
-            select(AudioFile, Transcription)
-            .join(Transcription, AudioFile.id == Transcription.audio_file_id)
-            .where(AudioFile.state == AudioFileState.QUEUED_ANALYSIS)
-            .order_by(AudioFile.created_at)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
-        
-        row = result.first()
-        return row if row else None
+                ncs_callsign = net.get("ncs")
+                if ncs_callsign:
+                    callsign_record = await self._get_or_create_callsign(session, ncs_callsign)
+                    if callsign_record:
+                        net_session.ncs_callsign_id = callsign_record.id
+
+                start = start_time
+                end = end_time
+                for participant in net.get("participants", []):
+                    participant_callsign = participant.get("callsign")
+                    callsign_record = await self._get_or_create_callsign(session, participant_callsign)
+                    if not callsign_record:
+                        continue
+
+                    participation = NetParticipation(
+                        net_session_id=net_session.id,
+                        callsign_id=callsign_record.id,
+                        first_seen=start,
+                        last_seen=end,
+                        transmission_count=max(1, int(participant.get("talk_turns", 1))),
+                        estimated_talk_seconds=int(participant.get("talk_time_sec", 0)),
+                        checkin_type=self._safe_checkin_type(participant.get("checkin_type")),
+                    )
+                    session.add(participation)
+
+    async def _persist_callsign_profiles(self, callsigns: list[dict[str, Any]] | None, context_map: dict[int, ContextEntry]) -> None:
+        if not callsigns:
+            return
+
+        now = datetime.now(timezone.utc)
+        async with get_session() as session:
+            for entry in callsigns:
+                callsign_record = await self._get_or_create_callsign(session, entry.get("callsign", ""))
+                if not callsign_record:
+                    continue
+
+                profile = await self._get_or_create_profile(session, callsign_record.id)
+                if entry.get("profile_summary"):
+                    profile.profile_summary = entry["profile_summary"]
+                if entry.get("favorite_topics"):
+                    profile.primary_topics = entry["favorite_topics"]
+                stats = entry.get("stats") or {}
+                profile.activity_score = float(stats.get("net_checkins", profile.activity_score or 0))
+                profile.engagement_score = float(stats.get("nets_as_ncs", profile.engagement_score or 0))
+                profile.last_analyzed_at = now
+
+                metadata = dict(profile.metadata_ or {})
+                metadata.update(
+                    {
+                        "net_roles": entry.get("net_roles"),
+                        "open_qso_refs": entry.get("open_qso_refs"),
+                        "stats": stats,
+                    }
+                )
+                profile.metadata_ = metadata
+
+                transcription_id = self._resolve_transcription_id(entry.get("sources"), context_map)
+                if transcription_id and entry.get("favorite_topics"):
+                    for topic in entry["favorite_topics"]:
+                        session.add(
+                            CallsignTopic(
+                                callsign_id=callsign_record.id,
+                                transcription_id=transcription_id,
+                                topic=topic[:100],
+                                confidence=0.9,
+                                excerpt=entry.get("profile_summary"),
+                                detected_at=now,
+                            )
+                        )
+
+    async def _persist_clubs(self, clubs: list[dict[str, Any]] | None, context_map: dict[int, ContextEntry]) -> None:
+        if not clubs:
+            return
+
+        now = datetime.now(timezone.utc)
+        async with get_session() as session:
+            for club_entry in clubs:
+                name = club_entry.get("name")
+                if not name:
+                    continue
+                club = await self._get_or_create_club(session, name)
+                if club_entry.get("summary"):
+                    club.summary = club_entry["summary"]
+                if club_entry.get("schedule"):
+                    club.schedule = club_entry["schedule"][:255]
+                metadata = dict(club.metadata_ or {})
+                metadata.update(
+                    {
+                        "related_nets": club_entry.get("related_nets"),
+                        "ncs_callsigns": club_entry.get("ncs_callsigns"),
+                    }
+                )
+                club.metadata_ = metadata
+                club.last_analyzed_at = now
+
+                for member in club_entry.get("members", []):
+                    callsign_record = await self._get_or_create_callsign(session, member.get("callsign", ""))
+                    if not callsign_record:
+                        continue
+                    membership = await self._get_or_create_membership(session, club.id, callsign_record.id)
+                    membership.role = self._safe_club_role(member.get("role"))
+                    membership.notes = member.get("notes")
+                    membership.last_seen = now
+
+    async def _persist_trends(self, trends: dict[str, Any] | None) -> None:
+        if not trends:
+            return
+
+        now = datetime.now(timezone.utc)
+        window_hours = int(trends.get("window_hours", 4))
+        window_end = now
+        window_start = now - timedelta(hours=window_hours)
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(TrendSnapshot).order_by(TrendSnapshot.window_end.desc()).limit(1)
+            )
+            latest = result.scalar_one_or_none()
+            if latest and (now - latest.window_end).total_seconds() < self.analysis_settings.trend_refresh_minutes * 60:
+                return
+
+            snapshot = TrendSnapshot(
+                window_start=window_start,
+                window_end=window_end,
+                trending_topics=trends.get("topics"),
+                trending_callsigns=trends.get("callsigns"),
+                notable_nets=trends.get("notable_nets"),
+                notes=trends.get("notes"),
+                metadata_={"source": "vllm"},
+            )
+            session.add(snapshot)
+
+    async def _persist_analysis(self, contexts: list[ContextEntry], payload: dict[str, Any]) -> None:
+        context_map = self._resolve_context_map(contexts)
+        await self._persist_nets(payload.get("nets"), context_map)
+        await self._persist_callsign_profiles(payload.get("callsigns"), context_map)
+        await self._persist_clubs(payload.get("clubs"), context_map)
+        await self._persist_trends(payload.get("trends"))
 
     async def process_one(self) -> bool:
-        """Process one file from queue."""
-        async with get_session() as session:
-            result = await self.get_next_audio_file(session)
-            
-            if result is None:
-                return False
-            
-            audio_file, transcription = result
-            
-            # Update state
-            audio_file.state = AudioFileState.ANALYZING
-            await session.flush()
-        
-        # Analyze
+        if await self._should_pause_for_transcription():
+            await asyncio.sleep(self.analysis_settings.idle_poll_interval_sec)
+            return False
+
+        contexts = await self._reserve_batch()
+        if not contexts:
+            return False
+
+        included, context_block = self._build_context_block(contexts)
+        if not included:
+            await self._release_unprocessed([ctx.audio_id for ctx in contexts])
+            logger.warning("analysis_batch_skipped_no_context")
+            return False
+
+        unused_audio_ids = {ctx.audio_id for ctx in contexts} - {ctx.audio_id for ctx in included}
+        if unused_audio_ids:
+            await self._release_unprocessed(list(unused_audio_ids))
+
+        prompt = self._build_prompt(context_block)
+
         try:
-            await self.analyze_transcription(audio_file, transcription)
-            
-            # Update state
-            async with get_session() as session:
-                audio_file = await session.get(AudioFile, audio_file.id)
-                audio_file.state = AudioFileState.ANALYZED
-                audio_file.state = AudioFileState.COMPLETE
-                
-                logger.info(
-                    "analysis_completed",
-                    audio_file_id=str(audio_file.id),
-                )
-        except Exception as e:
-            logger.error(
-                "analysis_failed",
-                audio_file_id=str(audio_file.id),
-                error=str(e),
-                exc_info=True,
+            response = await self.call_vllm(prompt)
+            payload = json.loads(response)
+            await self._persist_analysis(included, payload)
+            await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.COMPLETE)
+
+            logger.info(
+                "analysis_batch_completed",
+                batch_size=len(included),
+                sources=[ctx.audio_filename for ctx in included],
             )
-            
-            async with get_session() as session:
-                audio_file = await session.get(AudioFile, audio_file.id)
-                audio_file.state = AudioFileState.FAILED_ANALYSIS
-                audio_file.retry_count += 1
-        
-        return True
+            return True
+        except Exception as exc:
+            logger.error("analysis_batch_failed", error=str(exc), exc_info=True)
+            await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.FAILED_ANALYSIS, failed=True)
+            return False
 
     async def run_worker(self, worker_id: int = 0) -> None:
-        """Run analysis worker loop."""
         logger.info("analysis_worker_started", worker_id=worker_id)
-        
         try:
             while True:
-                try:
-                    processed = await self.process_one()
-                    
-                    if not processed:
-                        await asyncio.sleep(2.0)
-                        
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error(
-                        "analysis_worker_error",
-                        worker_id=worker_id,
-                        error=str(e),
-                        exc_info=True,
-                    )
-                    await asyncio.sleep(5.0)
+                processed = await self.process_one()
+                if not processed:
+                    await asyncio.sleep(self.analysis_settings.idle_poll_interval_sec)
+        except asyncio.CancelledError:
+            logger.info("analysis_worker_cancelled", worker_id=worker_id)
         finally:
             await self.close()
             logger.info("analysis_worker_stopped", worker_id=worker_id)
 
 
 async def main() -> None:
-    """Main entry point."""
     from tsn_common import setup_logging
-    
+
     settings = get_settings()
     setup_logging(settings.logging)
-    
-    analyzer = TranscriptAnalyzer(settings.vllm)
-    
-    # Run multiple workers
+
+    analyzer = TranscriptAnalyzer(settings.vllm, settings.analysis)
     workers = [
         asyncio.create_task(analyzer.run_worker(i))
-        for i in range(2)  # Analysis is heavier, use fewer workers
+        for i in range(settings.analysis.worker_count)
     ]
-    
+
     await asyncio.gather(*workers)
 
 

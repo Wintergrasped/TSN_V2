@@ -87,8 +87,8 @@ class ServiceOrchestrator:
             self.tasks.append(worker_task)
 
         # Analysis workers
-        analyzer = TranscriptAnalyzer(self.settings.vllm)
-        for i in range(2):  # Analysis is heavier, use fewer workers
+        analyzer = TranscriptAnalyzer(self.settings.vllm, self.settings.analysis)
+        for i in range(self.settings.analysis.worker_count):
             worker_task = asyncio.create_task(analyzer.run_worker(i))
             self.tasks.append(worker_task)
 
@@ -96,7 +96,7 @@ class ServiceOrchestrator:
             "server_services_started",
             transcription_workers=self.settings.transcription.max_concurrent,
             extraction_workers=self.settings.vllm.max_concurrent,
-            analysis_workers=2,
+            analysis_workers=self.settings.analysis.worker_count,
         )
 
     async def start_health_server(self) -> None:

@@ -5,7 +5,7 @@ Transcription pipeline - processes audio files with Whisper.
 import asyncio
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,9 @@ from tsn_common.models import (
 )
 
 logger = get_logger(__name__)
+
+CPU_SAFE_COMPUTE_TYPES = {"int8", "int8_float16", "int16"}
+DEFAULT_CPU_COMPUTE_TYPE = "int8"
 
 
 class TranscriptionPipeline:
@@ -38,6 +41,8 @@ class TranscriptionPipeline:
         self.settings = settings
         self.storage_dir = storage_dir
         self.model = None
+        self.model_device: Optional[str] = None
+        self.model_compute_type: Optional[str] = None
         
         logger.info(
             "transcription_pipeline_initialized",
@@ -46,6 +51,41 @@ class TranscriptionPipeline:
             device=settings.device,
         )
 
+    def _cuda_available(self) -> bool:
+        """Check whether CUDA is available in the current environment."""
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return True
+        except Exception as exc:  # pragma: no cover - torch not available in tests
+            logger.debug("cuda_check_failed", error=str(exc))
+        return False
+
+    def _resolve_runtime(self) -> Tuple[str, str]:
+        """Determine which device/compute type to use for Whisper."""
+        desired_device = self.settings.device
+        compute_type = self.settings.compute_type
+
+        cuda_ok = self._cuda_available()
+        if desired_device == "auto":
+            device = "cuda" if cuda_ok else "cpu"
+        elif desired_device == "cuda" and not cuda_ok:
+            logger.warning("cuda_not_available_falling_back_to_cpu")
+            device = "cpu"
+        else:
+            device = desired_device
+
+        if device == "cpu" and compute_type not in CPU_SAFE_COMPUTE_TYPES:
+            logger.info(
+                "compute_type_adjusted_for_cpu",
+                requested=compute_type,
+                fallback=DEFAULT_CPU_COMPUTE_TYPE,
+            )
+            compute_type = DEFAULT_CPU_COMPUTE_TYPE
+
+        return device, compute_type
+
     def _load_model(self) -> None:
         """Load Whisper model (lazy initialization)."""
         if self.model is not None:
@@ -53,18 +93,44 @@ class TranscriptionPipeline:
         
         if self.settings.backend == "faster-whisper":
             from faster_whisper import WhisperModel
-            
-            self.model = WhisperModel(
-                self.settings.model,
-                device=self.settings.device,
-                compute_type=self.settings.compute_type,
-            )
-            
+
+            device, compute_type = self._resolve_runtime()
+
+            try:
+                self.model = WhisperModel(
+                    self.settings.model,
+                    device=device,
+                    compute_type=compute_type,
+                )
+                self.model_device = device
+                self.model_compute_type = compute_type
+            except RuntimeError as exc:
+                error_msg = str(exc).lower()
+                if device == "cuda" and (
+                    "libcublas" in error_msg or "cuda" in error_msg
+                ):
+                    logger.warning(
+                        "cuda_initialization_failed_falling_back_to_cpu",
+                        error=str(exc),
+                    )
+                    device = "cpu"
+                    compute_type = DEFAULT_CPU_COMPUTE_TYPE
+                    self.model = WhisperModel(
+                        self.settings.model,
+                        device=device,
+                        compute_type=compute_type,
+                    )
+                    self.model_device = device
+                    self.model_compute_type = compute_type
+                else:
+                    raise
+
             logger.info(
                 "whisper_model_loaded",
                 backend="faster-whisper",
                 model=self.settings.model,
-                device=self.settings.device,
+                device=self.model_device,
+                compute_type=self.model_compute_type,
             )
         else:
             raise NotImplementedError(f"Backend {self.settings.backend} not implemented")

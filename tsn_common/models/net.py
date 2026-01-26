@@ -5,12 +5,13 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tsn_common.models.base import Base, GUID
 
 if TYPE_CHECKING:
+    from tsn_common.models.audio import AudioFile
     from tsn_common.models.callsign import Callsign
 
 
@@ -37,7 +38,16 @@ class NetSession(Base):
 
     # Net identification
     net_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    net_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     club_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Source linkage
+    audio_file_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(),
+        ForeignKey("audio_files.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Net Control Station
     ncs_callsign_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -63,8 +73,14 @@ class NetSession(Base):
     # AI-generated summary
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # AI derived metadata
+    topics: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    statistics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source_segments: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
     # Relationships
     ncs_callsign: Mapped["Callsign | None"] = relationship(foreign_keys=[ncs_callsign_id])
+    audio_file: Mapped["AudioFile | None"] = relationship()
     participations: Mapped[list["NetParticipation"]] = relationship(
         back_populates="net_session", cascade="all, delete-orphan"
     )
@@ -82,13 +98,18 @@ class NetSession(Base):
         return {
             **super().to_dict(),
             "net_name": self.net_name,
+            "net_type": self.net_type,
             "club_name": self.club_name,
             "ncs_callsign_id": str(self.ncs_callsign_id) if self.ncs_callsign_id else None,
+            "audio_file_id": str(self.audio_file_id) if self.audio_file_id else None,
             "start_time": self.start_time.isoformat(),
             "end_time": self.end_time.isoformat(),
             "duration_sec": self.duration_sec,
             "participant_count": self.participant_count,
             "confidence": self.confidence,
+            "topics": self.topics,
+            "statistics": self.statistics,
+            "source_segments": self.source_segments,
         }
 
 

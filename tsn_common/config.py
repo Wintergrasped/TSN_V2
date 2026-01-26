@@ -136,6 +136,32 @@ class VLLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TSN_VLLM_")
 
 
+class AnalysisSettings(BaseSettings):
+    """Deep analysis settings using vLLM output."""
+
+    worker_count: int = Field(default=2, description="Concurrent analysis workers")
+    max_batch_size: int = Field(default=4, description="Max transcripts per analysis batch")
+    context_char_budget: int = Field(
+        default=28000,
+        description="Approximate character budget to stay within the 32k token window",
+    )
+    max_response_tokens: int = Field(default=2500, description="Max tokens requested from vLLM")
+    transcription_backlog_pause: int = Field(
+        default=20,
+        description="Pause analysis when >= this many files await transcription/extraction",
+    )
+    idle_poll_interval_sec: float = Field(
+        default=2.0,
+        description="Sleep interval when no analysis work is available",
+    )
+    trend_refresh_minutes: int = Field(
+        default=30,
+        description="Minimum minutes between trend snapshots to avoid churn",
+    )
+
+    model_config = SettingsConfigDict(env_prefix="TSN_ANALYSIS_")
+
+
 class QRZSettings(BaseSettings):
     """QRZ XML API settings for callsign validation."""
 
@@ -254,6 +280,7 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     transcription: TranscriptionSettings = Field(default_factory=TranscriptionSettings)
     vllm: VLLMSettings = Field(default_factory=VLLMSettings)
+    analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
     qrz: QRZSettings = Field(default_factory=QRZSettings)
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
