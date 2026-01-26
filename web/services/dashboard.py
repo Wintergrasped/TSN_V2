@@ -113,7 +113,11 @@ async def get_trend_highlights(session: AsyncSession, limit: int = 5) -> list[di
 async def get_club_profiles(session: AsyncSession, limit: int = 25) -> list[dict]:
     stmt = (
         select(ClubProfile)
-        .order_by(ClubProfile.last_analyzed_at.desc().nullslast())
+        # MySQL/MariaDB do not support NULLS LAST, so emulate it with a boolean sort key.
+        .order_by(
+            ClubProfile.last_analyzed_at.is_(None),
+            ClubProfile.last_analyzed_at.desc(),
+        )
         .limit(limit)
     )
     result = await session.execute(stmt)
