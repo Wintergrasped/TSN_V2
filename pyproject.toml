@@ -60,6 +60,7 @@ dependencies = [
     "typer>=0.9",
     "rich>=13.7",
     "passlib[bcrypt]>=1.7",
+    "python-multipart>=0.0.7",
 ]
 
 [project.optional-dependencies]
