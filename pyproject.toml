@@ -37,6 +37,7 @@ dependencies = [
     # Web Framework
     "fastapi>=0.109",
     "uvicorn[standard]>=0.27",
+    "itsdangerous>=2.1",
     
     # Logging & Monitoring
     "structlog>=24.1",
