@@ -53,7 +53,7 @@ def create_app() -> FastAPI:
     async def _startup() -> None:  # pragma: no cover - app bootstrap
         engine = get_engine()
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(Base.metadata.create_all, checkfirst=True)
 
     @app.get("/healthz")
     async def healthcheck() -> dict:
