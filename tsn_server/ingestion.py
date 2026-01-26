@@ -15,7 +15,11 @@ from tsn_common.config import ServerSettings, get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
 from tsn_common.models import AudioFile, AudioFileState
-from tsn_common.utils import compute_sha256, get_audio_metadata
+from tsn_common.utils import (
+    compute_sha256,
+    get_audio_metadata,
+    parse_audio_filename_metadata,
+)
 
 logger = get_logger(__name__)
 
@@ -86,6 +90,9 @@ class IngestionService:
             return None
         
         try:
+            filename_meta = parse_audio_filename_metadata(file_path.name)
+            inferred_node_id = filename_meta.get("node_id") or node_id
+
             # Compute hash
             sha256 = compute_sha256(file_path)
             file_size = file_path.stat().st_size
@@ -114,6 +121,12 @@ class IngestionService:
                 
                 # Get audio metadata
                 metadata = get_audio_metadata(file_path)
+                if filename_meta.get("recorded_at"):
+                    metadata["source_timestamp"] = filename_meta["recorded_at"].isoformat()
+                if filename_meta.get("node_id"):
+                    metadata["filename_node_id"] = filename_meta["node_id"]
+                metadata["filename_format"] = filename_meta.get("format", "unknown")
+                metadata["archive_ingest"] = filename_meta.get("is_archive", False)
                 
                 # Move to storage (handle cross-device moves)
                 storage_path = self.storage_dir / file_path.name
@@ -135,7 +148,7 @@ class IngestionService:
                     duration_sec=metadata.get("duration_sec"),
                     sample_rate=metadata.get("sample_rate"),
                     channels=metadata.get("channels"),
-                    node_id=node_id,
+                    node_id=inferred_node_id,
                     uploaded_at=datetime.now(timezone.utc),
                     state=AudioFileState.RECEIVED,
                     metadata_=metadata,
@@ -179,7 +192,7 @@ class IngestionService:
                 if not file_path.is_file():
                     continue
 
-                if file_path.suffix.lower() != ".wav":
+                if file_path.suffix.lower() not in {".wav", ".mp3"}:
                     continue
 
                 files.append(file_path)

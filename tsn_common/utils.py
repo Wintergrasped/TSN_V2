@@ -3,8 +3,19 @@ Utility functions for TSN.
 """
 
 import hashlib
+import re
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, TypedDict
+
+
+class FilenameMetadata(TypedDict, total=False):
+    """Structured metadata extracted from audio filenames."""
+
+    node_id: str | None
+    recorded_at: datetime | None
+    format: str
+    is_archive: bool
 
 
 def compute_sha256(file_path: Path) -> str:
@@ -68,35 +79,60 @@ def normalize_callsign(callsign: str) -> str:
     return callsign
 
 
-def extract_timestamp_from_filename(filename: str) -> str | None:
-    """
-    Extract timestamp from filename if present.
-    
-    Expected format: YYYYMMDD_HHMMSS.wav
-    
-    Args:
-        filename: Audio file name
-        
-    Returns:
-        ISO timestamp string or None
-    """
-    import re
-    from datetime import datetime
-    
-    # Pattern: 20260122_123456.wav
-    pattern = r"(\d{8})_(\d{6})"
-    match = re.search(pattern, filename)
-    
+def _parse_timestamp(ts: str) -> datetime | None:
+    """Parse a YYYYMMDDHHMMSS timestamp into an aware datetime."""
+
+    try:
+        return datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+_NEW_FILENAME_PATTERN = re.compile(r"^(?P<node>[A-Za-z0-9\-]+)_(?P<ts>\d{14})$")
+_LEGACY_PATTERN = re.compile(r"^(?P<ts>\d{14})$")
+_UNDERSCORE_PATTERN = re.compile(r"^(?P<date>\d{8})_(?P<time>\d{6})")
+
+
+def parse_audio_filename_metadata(filename: str) -> FilenameMetadata:
+    """Extract node ID and capture timestamp clues from a filename."""
+
+    stem = Path(filename).stem
+    info: FilenameMetadata = {
+        "node_id": None,
+        "recorded_at": None,
+        "format": "unknown",
+        "is_archive": False,
+    }
+
+    match = _NEW_FILENAME_PATTERN.match(stem)
     if match:
-        date_str = match.group(1)  # YYYYMMDD
-        time_str = match.group(2)  # HHMMSS
-        
-        try:
-            dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
-            return dt.isoformat()
-        except ValueError:
-            return None
-    
+        info["node_id"] = match.group("node")
+        info["recorded_at"] = _parse_timestamp(match.group("ts"))
+        info["format"] = "node_timestamp"
+        return info
+
+    match = _LEGACY_PATTERN.match(stem)
+    if match:
+        info["recorded_at"] = _parse_timestamp(match.group("ts"))
+        info["format"] = "legacy_timestamp"
+        info["is_archive"] = True
+        return info
+
+    match = _UNDERSCORE_PATTERN.match(stem)
+    if match:
+        info["recorded_at"] = _parse_timestamp(match.group("date") + match.group("time"))
+        info["format"] = "legacy_timestamp"
+        info["is_archive"] = True
+
+    return info
+
+
+def extract_timestamp_from_filename(filename: str) -> str | None:
+    """Backward-compatible wrapper retaining legacy behavior."""
+
+    parsed = parse_audio_filename_metadata(filename)
+    if parsed["recorded_at"]:
+        return parsed["recorded_at"].isoformat()
     return None
 
 
