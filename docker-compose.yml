@@ -146,12 +146,6 @@ services:
       - "3000:3000"
     restart: unless-stopped
 
-  incoming_data:
-  storage_data:
-  node_incoming:
-  node_archive:
-  prometheus_data:
-  grafana_data:
 volumes:
   incoming_data:
   storage_data:
