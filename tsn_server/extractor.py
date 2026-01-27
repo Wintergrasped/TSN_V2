@@ -5,7 +5,7 @@ Callsign extractor - extracts and validates callsigns using regex + vLLM.
 import asyncio
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from sqlalchemy import select
@@ -23,6 +23,7 @@ from tsn_common.models import (
     ValidationMethod,
 )
 from tsn_common.utils import normalize_callsign
+from tsn_server.qrz_client import get_qrz_client
 
 logger = get_logger(__name__)
 
@@ -42,12 +43,20 @@ class CallsignExtractor:
         self.settings = settings
         self.http_client = httpx.AsyncClient(timeout=settings.timeout_sec)
         self.validated_cache: set[str] = set()
+        self.qrz_client = get_qrz_client()
         
         logger.info(
             "callsign_extractor_initialized",
             vllm_url=settings.base_url,
             model=settings.model,
         )
+        if self.qrz_client:
+            logger.info("qrz_validation_enabled")
+        else:
+            logger.warning(
+                "qrz_validation_disabled",
+                reason="credentials missing or TSN_QRZ_ENABLED is false",
+            )
 
     async def close(self) -> None:
         """Close HTTP client."""
@@ -170,6 +179,8 @@ Respond with JSON only:
         session: AsyncSession,
         callsign: str,
         validated: bool,
+        method: ValidationMethod | None = None,
+        qrz_metadata: dict[str, Any] | None = None,
     ) -> Callsign:
         """
         Get existing callsign or create new one.
@@ -177,7 +188,7 @@ Respond with JSON only:
         Args:
             session: Database session
             callsign: Normalized callsign
-            validated: Whether validated by vLLM
+            validated: Whether the callsign is considered verified
             
         Returns:
             Callsign record
@@ -193,10 +204,15 @@ Respond with JSON only:
             existing.last_seen = datetime.now(timezone.utc)
             existing.seen_count += 1
             
+            if qrz_metadata:
+                existing.metadata_ = self._merge_metadata(existing.metadata_, qrz_metadata)
+
             # Update validation if newly validated
             if validated and not existing.validated:
                 existing.validated = True
-                existing.validation_method = ValidationMethod.VLLM
+                existing.validation_method = method or ValidationMethod.VLLM
+            elif validated and method:
+                existing.validation_method = method
             
             return existing
         else:
@@ -205,15 +221,24 @@ Respond with JSON only:
             new_callsign = Callsign(
                 callsign=callsign,
                 validated=validated,
-                validation_method=ValidationMethod.VLLM if validated else ValidationMethod.REGEX,
+                validation_method=(method or ValidationMethod.VLLM) if validated else ValidationMethod.REGEX,
                 first_seen=now,
                 last_seen=now,
                 seen_count=1,
+                metadata_=self._merge_metadata({}, qrz_metadata),
             )
             session.add(new_callsign)
             await session.flush()
             
             return new_callsign
+
+    @staticmethod
+    def _merge_metadata(existing: dict | None, qrz_metadata: dict[str, Any] | None) -> dict:
+        data = dict(existing or {})
+        if qrz_metadata:
+            data["qrz"] = qrz_metadata
+            data["qrz_last_sync"] = datetime.now(timezone.utc).isoformat()
+        return data
 
     async def extract_from_transcription(
         self,
@@ -245,15 +270,24 @@ Respond with JSON only:
             candidates=candidates[:10],  # Log first 10
         )
         
-        # Validate with vLLM
+        # Validate with vLLM and enforce QRZ confirmation when available
         validation_results = await self.validate_with_vllm(candidates)
+        validation_results, qrz_metadata = await self._enforce_qrz_validation(validation_results)
         
         # Store in database
         callsigns = []
         
         async with get_session() as session:
             for candidate, is_valid in validation_results.items():
-                callsign = await self.get_or_create_callsign(session, candidate, is_valid)
+                metadata = qrz_metadata.get(candidate)
+                method = ValidationMethod.QRZ if metadata else (ValidationMethod.VLLM if is_valid else None)
+                callsign = await self.get_or_create_callsign(
+                    session,
+                    candidate,
+                    is_valid,
+                    method,
+                    metadata,
+                )
                 callsigns.append(callsign)
                 
                 # Create log entry
@@ -273,6 +307,30 @@ Respond with JSON only:
         )
         
         return callsigns
+
+    async def _enforce_qrz_validation(
+        self,
+        validation_result: dict[str, bool],
+    ) -> tuple[dict[str, bool], dict[str, dict[str, Any]]]:
+        """Require QRZ confirmation when a client is available."""
+
+        if not validation_result or not self.qrz_client:
+            return validation_result, {}
+
+        candidates = [cs for cs, ok in validation_result.items() if ok]
+        if not candidates:
+            return validation_result, {}
+
+        lookup = await self.qrz_client.lookup_many(candidates)
+        confirmed: dict[str, dict[str, Any]] = {}
+        for cs in candidates:
+            record = lookup.get(cs)
+            is_valid = bool(record)
+            validation_result[cs] = is_valid
+            if record:
+                confirmed[cs] = record
+
+        return validation_result, confirmed
 
     async def get_next_transcription(
         self,

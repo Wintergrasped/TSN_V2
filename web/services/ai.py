@@ -62,13 +62,29 @@ async def _call_openai(messages: list[dict[str, str]], *, max_tokens: int) -> st
         raise RuntimeError("OpenAI fallback is not configured")
 
     client = AsyncOpenAI(api_key=api_key)
-    response = await client.chat.completions.create(
+    # Responses API requires structured content blocks instead of legacy chat payloads.
+    formatted_input = [
+        {
+            "role": message["role"],
+            "content": [{"type": "text", "text": message["content"]}],
+        }
+        for message in messages
+    ]
+
+    response = await client.responses.create(
         model=settings.openai_model,
-        messages=messages,
+        input=formatted_input,
         temperature=0.2,
-        max_tokens=max_tokens,
+        max_output_tokens=max_tokens,
     )
-    return response.choices[0].message.content or ""
+
+    chunks: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            if getattr(content, "type", "") in {"text", "output_text"} and getattr(content, "text", None):
+                chunks.append(content.text)
+
+    return "".join(chunks)
 
 
 def _parse_json(content: str) -> dict[str, Any]:

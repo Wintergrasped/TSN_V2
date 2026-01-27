@@ -72,7 +72,7 @@ curl http://localhost:8080/metrics
 ## 🛰️ Web Portal Upgrades
 
 Recent work focuses on the operator-facing FastAPI portal so Net Control can work entirely from a browser, without touching the raw database:
-- **QRZ-only filters**: Callsign indexes default to verified QRZ IDs so noisy regex hits stop cluttering the lists; toggles remain for exploratory searches.
+- **QRZ-only filters**: Callsign indexes only surface operators that the QRZ XML API confirms, keeping speculative regex hits in a separate holding queue.
 - **Deep-linkable profiles**: `/callsigns/{id}` and `/clubs/{slug}` now surface transcripts, recent activity, membership graphs, and editable operator notes tied to the logged-in user.
 - **AI-assisted summaries**: vLLM (with OpenAI fallback) produces quick-read blurbs for hot callsigns, trending nets, and suggested aliases that can be merged in one click.
 - **Net Control cockpit**: Dedicated page streams live check-ins, lets you start/stop ad-hoc Net Control Sessions, capture manual check-ins, and export CSV logs for after-action reports.

@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Callsign Directory{% endblock %}
 {% block content %}
-<h2>QRZ Validated Callsigns</h2>
-<p class="muted">Only operators with confirmed QRZ validation are shown. Click a callsign to open the full profile.</p>
+<h2>QRZ Confirmed Callsigns</h2>
+<p class="muted">Only operators confirmed through the QRZ XML API are listed. Everything else remains in a pending state until QRZ validates it.</p>
 <table>
     <thead>
         <tr>
@@ -20,7 +20,7 @@
             <td>{{ cs.first_seen }}</td>
             <td>{{ cs.last_seen }}</td>
             <td>{{ cs.seen_count }}</td>
-            <td>{{ cs.validation_method or 'QRZ' }}</td>
+            <td>{{ cs.validation_method|upper if cs.validation_method else 'UNVERIFIED' }}</td>
         </tr>
         {% endfor %}
     </tbody>

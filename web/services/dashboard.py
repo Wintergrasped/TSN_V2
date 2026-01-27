@@ -1,10 +1,12 @@
 """Database query helpers backing the portal dashboards."""
 
+import asyncio
 from collections import defaultdict
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tsn_common.logging import get_logger
 from tsn_common.models.audio import AudioFile
 from tsn_common.models.callsign import Callsign, ValidationMethod
 from tsn_common.models.club import ClubProfile
@@ -13,6 +15,17 @@ from tsn_common.models.support import SystemHealth
 from tsn_common.models.transcription import Transcription
 from tsn_common.models.trend import TrendSnapshot
 from web.services.ai import merge_entities, summarize_dashboard_sections
+
+
+logger = get_logger(__name__)
+_AI_TIMEOUT_SEC = 6
+_DEFAULT_AI_SECTIONS = {
+    "queue": "AI summary unavailable.",
+    "nets": "AI summary unavailable.",
+    "clubs": "AI summary unavailable.",
+    "callsigns": "AI summary unavailable.",
+    "health": "AI summary unavailable.",
+}
 
 
 async def get_audio_queue_snapshot(session: AsyncSession) -> dict:
@@ -165,7 +178,19 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
     trends = await get_trend_highlights(session)
     clubs = await get_club_profiles(session)
     health = await get_system_health(session)
-    alias_map = await merge_entities("club", [club["name"] for club in clubs])
+
+    alias_map: dict[str, str] = {}
+    club_names = [club["name"] for club in clubs if club.get("name")]
+    if club_names:
+        try:
+            alias_map = await asyncio.wait_for(
+                merge_entities("club", club_names),
+                timeout=_AI_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("dashboard_alias_timeout", timeout_sec=_AI_TIMEOUT_SEC)
+        except Exception as exc:  # pragma: no cover - network variability
+            logger.error("dashboard_alias_failed", error=str(exc))
     grouped: dict[str, set[str]] = defaultdict(set)
     for alias, canonical in alias_map.items():
         grouped[canonical].add(alias)
@@ -175,15 +200,24 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
         aliases = grouped.get(canonical, set())
         club["aliases"] = sorted(a for a in aliases if a != canonical)
 
-    ai_sections = await summarize_dashboard_sections(
-        {
-            "queue": queue,
-            "callsigns": callsigns[:10],
-            "nets": nets[:10],
-            "clubs": clubs[:10],
-            "health": health[:5],
-        }
-    )
+    ai_sections = _DEFAULT_AI_SECTIONS.copy()
+    try:
+        ai_sections = await asyncio.wait_for(
+            summarize_dashboard_sections(
+                {
+                    "queue": queue,
+                    "callsigns": callsigns[:10],
+                    "nets": nets[:10],
+                    "clubs": clubs[:10],
+                    "health": health[:5],
+                }
+            ),
+            timeout=_AI_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("dashboard_ai_timeout", timeout_sec=_AI_TIMEOUT_SEC)
+    except Exception as exc:  # pragma: no cover - network variability
+        logger.error("dashboard_ai_failed", error=str(exc))
 
     return {
         "queue": queue,
