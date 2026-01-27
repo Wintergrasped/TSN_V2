@@ -35,12 +35,10 @@
         {% endif %}
     </article>
     <article>
-                <article>
-                    <h2>AI Quicklook</h2>
-                    {% for label, text in payload.ai_summaries.items() %}
-                        <p><strong>{{ label|capitalize }}:</strong> {{ text }}</p>
-                    {% endfor %}
-                </article>
+        <h2>AI Quicklook</h2>
+        {% for label, text in payload.ai_summaries.items() %}
+            <p><strong>{{ label|capitalize }}:</strong> {{ text }}</p>
+        {% endfor %}
         <h2>System Health</h2>
         <ul class="health-list">
             {% for component in payload.health %}
@@ -52,7 +50,6 @@
         </ul>
     </article>
 </section>
-                            <td><a href="/callsigns/{{ cs.callsign }}">{{ cs.callsign }}</a></td>
 <section>
     <h2>Recent Callsigns</h2>
     <table>
@@ -87,15 +84,14 @@
         <ul class="net-list">
             {% for net in payload.nets %}
                 <li>
-                    <span>
+                    <div>
                         <strong>{{ net.name }}</strong>
-                        <div class="card">
-                            <strong><a href="/clubs/{{ club.name }}">{{ club.canonical_name or club.name }}</a></strong>
-                            <p>{{ club.summary or 'Awaiting summary' }}</p>
-                            {% if club.aliases %}
-                                <p class="muted">Aliases: {{ club.aliases | join(', ') }}</p>
-                            {% endif %}
-                        </div>
+                        {% if net.club %}
+                            <span class="muted"> · <a href="/clubs/{{ net.club }}">{{ net.club }}</a></span>
+                        {% endif %}
+                    </div>
+                    <p class="muted">{{ net.start_time }} · {{ net.participants }} participants</p>
+                </li>
             {% endfor %}
         </ul>
     </article>
@@ -103,8 +99,11 @@
         <h2>Club Profiles</h2>
         {% for club in payload.clubs %}
             <div class="card">
-                <strong>{{ club.name }}</strong>
+                <strong><a href="/clubs/{{ club.name }}">{{ club.canonical_name or club.name }}</a></strong>
                 <p>{{ club.summary or 'Awaiting summary' }}</p>
+                {% if club.aliases %}
+                    <p class="muted">Aliases: {{ club.aliases | join(', ') }}</p>
+                {% endif %}
             </div>
         {% endfor %}
     </article>
