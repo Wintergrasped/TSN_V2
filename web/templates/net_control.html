@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Net Control{% endblock %}
+{% block content %}
+<section class="grid">
+    <article>
+        <h2>Manual Net Session</h2>
+        {% if active_session %}
+            <p class="muted">Active since {{ active_session.started_at }} • started by {{ active_session.started_by }}</p>
+            <form method="post" action="/net-control/{{ active_session.id }}/stop">
+                <button type="submit">Flag Net Stop</button>
+            </form>
+        {% else %}
+            <form method="post" action="/net-control/start" class="net-control-form">
+                <label for="net-name">Net name</label>
+                <input id="net-name" name="name" placeholder="Thursday Traffic Net" />
+                <label for="net-notes">Notes</label>
+                <textarea id="net-notes" name="notes" rows="3" placeholder="Any context or repeaters"></textarea>
+                <button type="submit">Flag Net Start</button>
+            </form>
+        {% endif %}
+    </article>
+    <article>
+        <h2>Recent Sessions</h2>
+        <ul class="health-list">
+            {% for session in sessions %}
+                <li>
+                    <span>{{ session.name }} • {{ session.started_at }}</span>
+                    <strong class="status {{ session.status }}">{{ session.status }}</strong>
+                </li>
+            {% endfor %}
+        </ul>
+    </article>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h3>Live Check-ins & Transcripts</h3>
+        <div class="chip-row">
+            <button id="net-feed-refresh" data-feed-url="/api/net-control/feed">Refresh</button>
+            <a class="chip" href="/api/net-control/feed?format=csv">Download CSV</a>
+        </div>
+    </div>
+    <div class="table-wrapper">
+        <table id="net-control-feed">
+            <thead><tr><th>Detected At</th><th>Callsign ID</th><th>Confidence</th><th>Context</th></tr></thead>
+            <tbody>
+                {% for row in feed %}
+                    <tr>
+                        <td>{{ row.detected_at }}</td>
+                        <td>{{ row.callsign_id }}</td>
+                        <td>{{ row.confidence or '—' }}</td>
+                        <td>{{ row.context or row.transcript }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

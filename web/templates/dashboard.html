@@ -35,6 +35,12 @@
         {% endif %}
     </article>
     <article>
+                <article>
+                    <h2>AI Quicklook</h2>
+                    {% for label, text in payload.ai_summaries.items() %}
+                        <p><strong>{{ label|capitalize }}:</strong> {{ text }}</p>
+                    {% endfor %}
+                </article>
         <h2>System Health</h2>
         <ul class="health-list">
             {% for component in payload.health %}
@@ -46,7 +52,7 @@
         </ul>
     </article>
 </section>
-
+                            <td><a href="/callsigns/{{ cs.callsign }}">{{ cs.callsign }}</a></td>
 <section>
     <h2>Recent Callsigns</h2>
     <table>
@@ -83,10 +89,13 @@
                 <li>
                     <span>
                         <strong>{{ net.name }}</strong>
-                        <small>{{ net.start_time }} • {{ net.duration_sec // 60 }} min</small>
-                    </span>
-                    <span>{{ net.participants }} ops</span>
-                </li>
+                        <div class="card">
+                            <strong><a href="/clubs/{{ club.name }}">{{ club.canonical_name or club.name }}</a></strong>
+                            <p>{{ club.summary or 'Awaiting summary' }}</p>
+                            {% if club.aliases %}
+                                <p class="muted">Aliases: {{ club.aliases | join(', ') }}</p>
+                            {% endif %}
+                        </div>
             {% endfor %}
         </ul>
     </article>

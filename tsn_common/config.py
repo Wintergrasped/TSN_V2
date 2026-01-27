@@ -13,10 +13,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseSettings(BaseSettings):
-    """Database connection settings."""
+    """Database connection settings (MySQL/MariaDB only)."""
 
-    engine: Literal["postgresql", "mysql"] = Field(
-        default="postgresql",
+    engine: Literal["mysql"] = Field(
+        default="mysql",
         description="Database engine to use",
     )
     host: str = Field(default="localhost", description="Database host")
@@ -37,20 +37,16 @@ class DatabaseSettings(BaseSettings):
     @property
     def resolved_driver(self) -> str:
         """Return the async driver for the configured engine."""
-        if self.driver:
-            return self.driver
-        return "asyncpg" if self.engine == "postgresql" else "asyncmy"
+        return self.driver or "asyncmy"
 
     @property
     def url(self) -> str:
         """Get database URL for SQLAlchemy."""
         user = quote_plus(self.user)
         password = quote_plus(self.password.get_secret_value())
-        base = f"{self.engine}+{self.resolved_driver}://{user}:{password}"
+        base = f"mysql+{self.resolved_driver}://{user}:{password}"
         url = f"{base}@{self.host}:{self.port}/{self.name}"
-        if self.engine == "mysql":
-            return f"{url}?charset=utf8mb4"
-        return url
+        return f"{url}?charset=utf8mb4"
 
     model_config = SettingsConfigDict(env_prefix="TSN_DB_")
 

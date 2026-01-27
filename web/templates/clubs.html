@@ -5,10 +5,13 @@
 <div class="grid">
     {% for club in clubs %}
         <article class="card">
-            <h3>{{ club.name }}</h3>
+            <h3><a href="/clubs/{{ club.name }}">{{ club.canonical_name or club.name }}</a></h3>
             <p>{{ club.summary or 'No narrative yet.' }}</p>
             <p class="muted">Schedule: {{ club.schedule or 'n/a' }}</p>
             <p class="muted">Members tracked: {{ club.members or 'unknown' }}</p>
+            {% if club.aliases %}
+                <p class="muted">Aliases: {{ club.aliases | join(', ') }}</p>
+            {% endif %}
         </article>
     {% endfor %}
 </div>

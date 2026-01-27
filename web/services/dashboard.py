@@ -6,12 +6,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tsn_common.models.audio import AudioFile
-from tsn_common.models.callsign import Callsign
+from tsn_common.models.callsign import Callsign, ValidationMethod
 from tsn_common.models.club import ClubProfile
 from tsn_common.models.net import NetSession
 from tsn_common.models.support import SystemHealth
 from tsn_common.models.transcription import Transcription
 from tsn_common.models.trend import TrendSnapshot
+from web.services.ai import merge_entities, summarize_dashboard_sections
 
 
 async def get_audio_queue_snapshot(session: AsyncSession) -> dict:
@@ -34,6 +35,10 @@ async def get_audio_queue_snapshot(session: AsyncSession) -> dict:
 async def get_recent_callsigns(session: AsyncSession, limit: int = 25) -> list[dict]:
     stmt = (
         select(Callsign)
+        .where(
+            Callsign.validated.is_(True),
+            Callsign.validation_method == ValidationMethod.QRZ,
+        )
         .order_by(Callsign.last_seen.desc())
         .limit(limit)
     )
@@ -42,6 +47,7 @@ async def get_recent_callsigns(session: AsyncSession, limit: int = 25) -> list[d
         {
             "callsign": c.callsign,
             "validated": c.validated,
+            "validation_method": c.validation_method.value if c.validation_method else None,
             "first_seen": c.first_seen.isoformat(),
             "last_seen": c.last_seen.isoformat(),
             "seen_count": c.seen_count,
@@ -159,6 +165,25 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
     trends = await get_trend_highlights(session)
     clubs = await get_club_profiles(session)
     health = await get_system_health(session)
+    alias_map = await merge_entities("club", [club["name"] for club in clubs])
+    grouped: dict[str, set[str]] = defaultdict(set)
+    for alias, canonical in alias_map.items():
+        grouped[canonical].add(alias)
+    for club in clubs:
+        canonical = alias_map.get(club["name"], club["name"])
+        club["canonical_name"] = canonical
+        aliases = grouped.get(canonical, set())
+        club["aliases"] = sorted(a for a in aliases if a != canonical)
+
+    ai_sections = await summarize_dashboard_sections(
+        {
+            "queue": queue,
+            "callsigns": callsigns[:10],
+            "nets": nets[:10],
+            "clubs": clubs[:10],
+            "health": health[:5],
+        }
+    )
 
     return {
         "queue": queue,
@@ -168,4 +193,5 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
         "trends": trends,
         "clubs": clubs,
         "health": health,
+        "ai_summaries": ai_sections,
     }

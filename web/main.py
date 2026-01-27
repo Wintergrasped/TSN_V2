@@ -11,7 +11,7 @@ from tsn_common.db import get_engine
 from tsn_common.models.base import Base
 from web import models  # noqa: F401 ensures PortalUser is registered
 from web.config import get_web_settings
-from web.routes import api, auth, dashboard
+from web.routes import api, auth, dashboard, profiles
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(dashboard.router)
+    app.include_router(profiles.router)
     app.include_router(api.router)
     app.include_router(auth.router)
 

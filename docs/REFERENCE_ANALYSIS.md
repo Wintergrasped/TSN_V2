@@ -445,7 +445,7 @@ If AI fails, fall back to regex. If QRZ fails, mark as unvalidated. System prefe
 
 `callsigns`, `extended_callsign_profile` use `INSERT ... ON DUPLICATE KEY UPDATE`.
 
-**V2 Approach**: PostgreSQL `ON CONFLICT DO UPDATE` (same idea).
+**V2 Approach**: MySQL `ON DUPLICATE KEY UPDATE` (same idea).
 
 ---
 

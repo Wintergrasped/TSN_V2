@@ -5,7 +5,7 @@
 ### Prerequisites
 
 - Ubuntu 22.04+ or Debian 12+
-- PostgreSQL 15+
+- MySQL 8.0+ or MariaDB 10.6+ (remote or local)
 - NVIDIA GPU with CUDA 11.8+ (for transcription)
 - 16GB+ RAM
 - 500GB+ storage
@@ -21,8 +21,7 @@ sudo apt install -y \
     python3.11 \
     python3.11-venv \
     python3-pip \
-    postgresql \
-    postgresql-contrib \
+    default-mysql-client \
     nginx \
     git \
     ffmpeg \
@@ -33,18 +32,25 @@ sudo apt install -y \
 sudo useradd -r -m -d /opt/tsn -s /bin/bash tsn
 ```
 
-### 2. Setup PostgreSQL
+### 2. Configure MySQL
+
+Provision a MySQL (or MariaDB) schema that TSN can use. If you manage the
+database locally, install `mysql-server` and create the schema; if you use a
+hosted instance, run equivalent commands from any MySQL client:
 
 ```bash
-# Switch to postgres user
-sudo -u postgres psql
-
-# Create database and user
-CREATE DATABASE tsn;
-CREATE USER tsn_user WITH PASSWORD 'your_secure_password';
-GRANT ALL PRIVILEGES ON DATABASE tsn TO tsn_user;
-\q
+mysql -u root -p
 ```
+
+```sql
+CREATE DATABASE tsn CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'tsn_user'@'%' IDENTIFIED BY 'your_secure_password';
+GRANT ALL PRIVILEGES ON tsn.* TO 'tsn_user'@'%';
+FLUSH PRIVILEGES;
+```
+
+Update firewalls/security groups so the TSN server can reach the database host
+on port 3306.
 
 ### 3. Install TSN
 
@@ -326,24 +332,24 @@ docker compose logs -f --tail=100 tsn_server
 
 ```bash
 # Backup
-pg_dump -h localhost -U tsn_user tsn > tsn_backup_$(date +%Y%m%d).sql
+mysqldump -h localhost -u tsn_user -p tsn > tsn_backup_$(date +%Y%m%d).sql
 
-# Vacuum
-psql -h localhost -U tsn_user -d tsn -c "VACUUM ANALYZE;"
+# Optimize / analyze tables
+mysqlcheck -h localhost -u tsn_user -p --analyze --optimize tsn
 
 # Check size
-psql -h localhost -U tsn_user -d tsn -c "SELECT pg_size_pretty(pg_database_size('tsn'));"
+mysql -h localhost -u tsn_user -p -e "SELECT table_schema AS db, ROUND(SUM(data_length + index_length)/1024/1024, 2) AS size_mb FROM information_schema.TABLES WHERE table_schema='tsn';"
 ```
 
 ### Performance Tuning
 
-**PostgreSQL** (`/etc/postgresql/15/main/postgresql.conf`):
+**MySQL/MariaDB** (`/etc/mysql/mysql.conf.d/mysqld.cnf`):
 ```ini
-shared_buffers = 4GB
-effective_cache_size = 12GB
-work_mem = 64MB
-maintenance_work_mem = 1GB
-max_connections = 100
+innodb_buffer_pool_size = 4G
+innodb_log_file_size = 1G
+innodb_flush_log_at_trx_commit = 2
+max_connections = 200
+table_open_cache = 4000
 ```
 
 **TSN Worker Counts** (`.env`):
@@ -376,7 +382,7 @@ sudo systemctl restart tsn-server
 tsn status
 
 # View specific failure
-psql -h localhost -U tsn_user -d tsn -c "SELECT * FROM audio_files WHERE state LIKE 'FAILED%' LIMIT 10;"
+mysql -h localhost -u tsn_user -p -e "SELECT * FROM audio_files WHERE state LIKE 'FAILED%' LIMIT 10;" tsn
 
 # Clean up
 tsn clean-failed --no-dry-run
@@ -385,11 +391,11 @@ tsn clean-failed --no-dry-run
 ### Issue: Database Connection Errors
 
 ```bash
-# Check PostgreSQL
-sudo systemctl status postgresql
+# Check MySQL/MariaDB
+sudo systemctl status mysql || sudo systemctl status mariadb
 
 # Check connections
-psql -h localhost -U tsn_user -d tsn -c "SELECT count(*) FROM pg_stat_activity WHERE datname='tsn';"
+mysql -h localhost -u tsn_user -p -e "SHOW STATUS LIKE 'Threads_connected';"
 
 # Restart pooler
 sudo systemctl restart tsn-server
@@ -419,12 +425,12 @@ sudo systemctl restart tsn-server
 
 - Run multiple transcription workers on different GPUs
 - Run extraction/analysis workers on separate CPU-only machines
-- Use PostgreSQL connection pooler (pgBouncer)
+- Use MySQL connection pooling (ProxySQL or HAProxy)
 
 ### Vertical Scaling
 
 - Increase worker counts based on CPU/GPU availability
-- Increase PostgreSQL shared_buffers
+- Increase MySQL `innodb_buffer_pool_size`
 - Add more storage for audio archives
 
 ---

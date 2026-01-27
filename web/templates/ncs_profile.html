@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}NCS {{ payload.callsign }}{% endblock %}
+{% block content %}
+<h2>Net Control Profile • {{ payload.callsign }}</h2>
+<p class="muted">Manual and detected nets where this operator held the mic.</p>
+<div class="table-wrapper">
+    <table>
+        <thead><tr><th>Net</th><th>Club</th><th>Start</th><th>Duration</th><th>Participants</th></tr></thead>
+        <tbody>
+            {% for net in payload.nets %}
+                <tr>
+                    <td>{{ net.name }}</td>
+                    <td>{{ net.club or '—' }}</td>
+                    <td>{{ net.start_time }}</td>
+                    <td>{{ (net.duration_sec // 60) if net.duration_sec else '—' }} min</td>
+                    <td>{{ net.participants }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

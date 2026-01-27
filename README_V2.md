@@ -7,7 +7,7 @@
 TSN v2 is a complete ground-up rewrite of The Spoken Network, designed for:
 - **10x Performance**: Async architecture with concurrent processing (100 files/min vs 10/min)
 - **Production Reliability**: 99.9% uptime target with automatic retry and failure recovery
-- **Scalability**: PostgreSQL-backed queue, horizontal scaling support
+- **Scalability**: MySQL-backed queue, horizontal scaling support
 - **Observability**: Structured logging, Prometheus metrics, health checks
 
 ## 🚀 Quick Start
@@ -68,6 +68,16 @@ curl http://localhost:8080/metrics
 ```
 
 ## 🗃️ Legacy Schema Migration (MySQL)
+
+## 🛰️ Web Portal Upgrades
+
+Recent work focuses on the operator-facing FastAPI portal so Net Control can work entirely from a browser, without touching the raw database:
+- **QRZ-only filters**: Callsign indexes default to verified QRZ IDs so noisy regex hits stop cluttering the lists; toggles remain for exploratory searches.
+- **Deep-linkable profiles**: `/callsigns/{id}` and `/clubs/{slug}` now surface transcripts, recent activity, membership graphs, and editable operator notes tied to the logged-in user.
+- **AI-assisted summaries**: vLLM (with OpenAI fallback) produces quick-read blurbs for hot callsigns, trending nets, and suggested aliases that can be merged in one click.
+- **Net Control cockpit**: Dedicated page streams live check-ins, lets you start/stop ad-hoc Net Control Sessions, capture manual check-ins, and export CSV logs for after-action reports.
+- **Contextual customization**: Operators can pin watchlist notes, pre-fill cue cards, and capture action items per callsign/club without leaving the dashboard.
+
 
 If you are upgrading an existing MySQL deployment (for example the
 `repeater` schema on 51.81.202.9) you **must** migrate the legacy tables
@@ -147,7 +157,7 @@ tsn clean-failed         # Clean up failed entries
 │         └──────────────┬───────────────────────────┘        │
 │                        ▼                                    │
 │                ┌───────────────┐                            │
-│                │  PostgreSQL   │                            │
+│                │    MySQL      │                            │
 │                │   Database    │                            │
 │                └───────────────┘                            │
 └─────────────────────────────────────────────────────────────┘
@@ -205,9 +215,9 @@ See `.env.example` for all options. Key settings:
 
 ### Database
 ```bash
-TSN_DB_ENGINE=postgresql  # or mysql
+TSN_DB_ENGINE=mysql
 TSN_DB_HOST=localhost
-TSN_DB_PORT=5432
+TSN_DB_PORT=3306
 TSN_DB_NAME=tsn
 TSN_DB_USER=tsn_user
 TSN_DB_PASSWORD=secure_password

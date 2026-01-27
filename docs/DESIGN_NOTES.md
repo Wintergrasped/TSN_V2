@@ -2,17 +2,17 @@
 
 ## Key Design Decisions & Rationale
 
-### 1. PostgreSQL over MySQL
+### 1. MySQL/MariaDB as the Primary Database
 
-**Decision**: Use PostgreSQL 15+ with async support  
+**Decision**: Standardize on MySQL 8.0+ / MariaDB 10.6+ with async support  
 **Rationale**:
-- **JSONB**: Superior JSON storage and indexing for metadata extensibility
-- **Array Types**: Native support for string arrays (topics, participants)
-- **Async Driver**: Better asyncpg performance vs MySQL async drivers
-- **ACID Compliance**: Stronger guarantees for financial-grade reliability
-- **Community**: More active development in Python/async ecosystem
+- **Operational Fit**: Matches the existing repeater infrastructure and DBA skillset
+- **UTF-8 Everywhere**: Mature support for `utf8mb4` across drivers and tooling
+- **Async Driver**: `asyncmy` provides stable async access without extra dependencies
+- **ACID Compliance**: InnoDB delivers the guarantees TSN needs
+- **Lower Complexity**: Keeps the deployment footprint minimal (no secondary DB engine)
 
-**Migration Path**: One-time import from original MySQL tables
+**Migration Path**: Continue using the existing MySQL schema, running the UUID migrator if needed
 
 ### 2. UUID Primary Keys
 
@@ -49,14 +49,14 @@
 
 ### 5. No Message Queue Dependency
 
-**Decision**: Use PostgreSQL as work queue (no Redis/RabbitMQ)  
+**Decision**: Use MySQL as the work queue (no Redis/RabbitMQ)  
 **Rationale**:
 - **Simplicity**: One less infrastructure component
 - **ACID**: Transactional guarantees for queue operations
-- **Sufficient**: TSN isn't high-frequency trading, Postgres queue is fast enough
+- **Sufficient**: TSN isn't high-frequency trading; InnoDB row locks are fast enough
 - **Observability**: SQL queries to inspect queue state
 
-**Performance**: SELECT FOR UPDATE SKIP LOCKED for queue dequeue (Postgres 9.5+)
+**Performance**: `SELECT ... FOR UPDATE SKIP LOCKED` via MySQL 8.0 to dequeue work without contention
 
 ### 6. Phonetic Corrections Table
 
@@ -174,7 +174,7 @@
 |--------|----------|---------|---------|
 | Language | Python 3.9 | Python 3.11+ | 20% faster, better type hints |
 | Async | Threading, subprocess | asyncio | 10x concurrency |
-| Database | MySQL | PostgreSQL | JSONB, better async |
+| Database | MySQL | MySQL (async) | Single engine, no migration |
 | ORM | mysql-connector | SQLAlchemy 2.0 | Type safety, migrations |
 | Config | Hardcoded + .env | Pydantic Settings | Validation, hierarchy |
 | State | File system | Database | ACID, no races |
@@ -235,13 +235,13 @@
 ## Future Scaling Path
 
 ### Current (Single Server)
-- 1 database (Postgres)
+- 1 database (MySQL/MariaDB)
 - 1-4 transcription workers (GPU-bound)
 - 5-10 analysis workers (CPU-bound)
 - 1-10 nodes (repeater sites)
 
 ### Next (Horizontal)
-- 1 database cluster (Postgres replication)
+- 1 database cluster (MySQL replication / read replicas)
 - N transcription workers (multiple GPUs)
 - M analysis workers (CPU scale-out)
 - 100+ nodes (federation)

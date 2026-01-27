@@ -37,7 +37,7 @@ TSN V2 is a complete ground-up rewrite of The Spoken Network, designed for 24/7 
 │        │                    │                     │              │
 │        ▼                    ▼                     ▼              │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
-│  │  PostgreSQL  │◀───│ vLLM Analysis│◀───│  Topic       │      │
+│  │    MySQL     │◀───│ vLLM Analysis│◀───│  Topic       │      │
 │  │  Database    │    │  Engine      │    │  Extractor   │      │
 │  └──────────────┘    └──────────────┘    └──────────────┘      │
 └─────────────────────────────────────────────────────────────────┘
@@ -52,12 +52,12 @@ TSN V2 is a complete ground-up rewrite of The Spoken Network, designed for 24/7 
 
 ### 2. **Queue-Based Processing**
 - **Original**: File-system based state (incoming/processed dirs)
-- **New**: PostgreSQL-backed work queues with state machine
+- **New**: MySQL-backed work queues with state machine
 - **Benefit**: Atomic operations, no race conditions, proper retries
 
 ### 3. **Database Evolution**
 - **Original**: MySQL with manual connection management
-- **New**: PostgreSQL with SQLAlchemy ORM + Alembic migrations
+- **New**: Managed MySQL with SQLAlchemy ORM + Alembic migrations
 - **Benefit**: ACID guarantees, connection pooling, schema versioning
 
 ### 4. **Configuration Management**
@@ -267,10 +267,10 @@ Error States (from any stage):
 ### Server Side
 - **Language**: Python 3.11+
 - **Framework**: FastAPI (for optional REST API)
-- **Database**: PostgreSQL 15+ (JSONB, async support)
+- **Database**: MySQL 8.0+ / MariaDB 10.6+
 - **ORM**: SQLAlchemy 2.0 (async)
 - **Migrations**: Alembic
-- **Task Queue**: asyncio + PostgreSQL (no Redis dependency)
+- **Task Queue**: asyncio + MySQL (no Redis dependency)
 - **Libraries**:
   - `faster-whisper`: GPU transcription
   - `openai`: vLLM-compatible client
@@ -357,17 +357,12 @@ WantedBy=multi-user.target
 ```bash
 # Docker Compose
 services:
-  postgres:
-    image: postgres:15-alpine
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+  tsn_server:
+    image: tsn/server:latest
     environment:
-      POSTGRES_DB: tsn
-      POSTGRES_USER: tsn_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-  
-  transcriber:
-    image: tsn/transcriber:latest
+      TSN_DB_HOST: ${TSN_DB_HOST}  # MySQL endpoint
+      TSN_DB_USER: ${TSN_DB_USER}
+      TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
     deploy:
       resources:
         reservations:
@@ -376,14 +371,18 @@ services:
     volumes:
       - audio_storage:/data/audio
     depends_on:
-      - postgres
-  
-  analyzer:
-    image: tsn/analyzer:latest
-    depends_on:
-      - postgres
       - vllm
   
+  tsn_web:
+    image: tsn/web:latest
+    environment:
+      TSN_DB_HOST: ${TSN_DB_HOST}
+      TSN_DB_USER: ${TSN_DB_USER}
+      TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
+      TSN_WEB_SESSION_SECRET: ${TSN_WEB_SESSION_SECRET}
+    ports:
+      - "8081:8080"
+
   vllm:
     image: vllm/vllm-openai:latest
     command: --model Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4 --gpu-memory-utilization 0.9

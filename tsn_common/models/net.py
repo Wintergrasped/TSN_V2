@@ -5,7 +5,17 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tsn_common.models.base import Base, GUID
@@ -160,3 +170,28 @@ class NetParticipation(Base):
             f"<NetParticipation(net_session_id={self.net_session_id}, "
             f"callsign_id={self.callsign_id})>"
         )
+
+
+class NetControlSession(Base):
+    """Manual net control sessions flagged through the portal."""
+
+    __tablename__ = "net_control_sessions"
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    started_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    started_by_callsign: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    download_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("ix_net_control_status", "status", "started_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<NetControlSession(name={self.name!r}, status={self.status})>"

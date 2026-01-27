@@ -213,7 +213,7 @@ async def test_full_pipeline():
 - [ ] Enrich profiles with QRZ data
 
 **Search Enhancement**:
-- [ ] Full-text search (PostgreSQL tsvector)
+- [ ] Full-text search (MySQL FULLTEXT indexes)
 - [ ] Advanced filters (date, callsign, topic)
 - [ ] Saved searches
 
@@ -254,7 +254,7 @@ async def test_full_pipeline():
 - [ ] Multi-server deployment
 - [ ] Load balancer configuration
 - [ ] Distributed transcription workers
-- [ ] PostgreSQL read replicas
+- [ ] MySQL read replicas / clustering
 
 **Geographic Distribution**:
 - [ ] Regional servers (US-East, US-West, EU)
@@ -318,7 +318,7 @@ async def test_full_pipeline():
 
 ### Immediate (Weeks 3-6)
 - **Development**: 2 backend engineers, 1 QA engineer
-- **Infrastructure**: Staging environment (1 GPU server, PostgreSQL)
+- **Infrastructure**: Staging environment (1 GPU server, MySQL)
 - **Time**: 4 weeks
 
 ### Short-Term (Weeks 7-12)

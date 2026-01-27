@@ -3,14 +3,14 @@
 This guide walks a Debian 12 operator with limited Linux experience through the
 steps required to update the TSN database schema after pulling new code or images.
 It assumes the stack runs via Docker Compose on the same host that stores the
-database (PostgreSQL or MySQL/MariaDB) and that you have shell access with sudo.
+database (MySQL/MariaDB) and that you have shell access with sudo.
 
 ---
 
 ## 1. Before you start
 
 1. **Know your database**
-   - PostgreSQL default port 5432, MySQL/MariaDB default 3306.
+   - MySQL/MariaDB default port 3306.
    - Credentials live in `.env` or environment variables referenced by
      `TSN_DB_*` settings. You will need them for backups.
 
@@ -30,7 +30,7 @@ database (PostgreSQL or MySQL/MariaDB) and that you have shell access with sudo.
 4. **Install helper packages (only once)**
    ```bash
    sudo apt update
-   sudo apt install -y python3-pip postgresql-client mariadb-client
+   sudo apt install -y python3-pip mariadb-client
    ```
 
 ---
@@ -38,13 +38,6 @@ database (PostgreSQL or MySQL/MariaDB) and that you have shell access with sudo.
 ## 2. Take a backup (strongly recommended)
 
 > Skip only if this is a disposable/test database.
-
-### PostgreSQL example
-```bash
-export PGPASSWORD="<db-password>"
-pg_dump -h <db-host> -U <db-user> -d <db-name> \
-  -F c -f ~/tsn_backup_$(date +%Y%m%d%H%M).dump
-```
 
 ### MySQL/MariaDB example
 ```bash
@@ -60,9 +53,8 @@ Keep the backup file somewhere safe before continuing.
 
 Use this when you already have live data you want to keep.
 
-1. **Bring containers back up but without traffic**
+1. **Bring the TSN services back up but keep external traffic blocked**
    ```bash
-   docker compose up -d db  # start only the database service if defined
    docker compose up -d tsn_server
    ```
 
@@ -92,16 +84,10 @@ Use this when you already have live data you want to keep.
    ```
 
 ### Verifying
-- PostgreSQL:
-  ```bash
-  docker compose exec db psql -U <db-user> -d <db-name> \
-    -c "\dt club_profiles trend_snapshots"
-  ```
-- MySQL:
-  ```bash
-  docker compose exec db mysql -u <db-user> -p<db-password> -e \
-    "SHOW TABLES LIKE 'club_profiles';"
-  ```
+```bash
+mysql -h <db-host> -u <db-user> -p<db-password> -e \
+   "SHOW TABLES LIKE 'club_profiles';" <db-name>
+```
 Tables should appear with the current timestamp.
 
 ---

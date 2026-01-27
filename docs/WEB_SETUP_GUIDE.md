@@ -3,7 +3,7 @@
 This document walks an operator with limited Linux experience through deploying the
 new FastAPI-based web portal (replacement for the legacy `kk7nqn.net` site) onto a
 remote Debian 12 host. The guide assumes you already have SSH access to the host
-and valid database credentials for the existing MySQL/PostgreSQL instance that
+and valid database credentials for the existing MySQL/MariaDB instance that
 TSN uses for ingestion.
 
 > **At a glance**
@@ -61,7 +61,7 @@ TSN uses for ingestion.
    cp .env.example .env
    nano .env
    ```
-2. Update the database block to point at the **existing** TSN database (MySQL example shown):
+2. Update the database block to point at the **existing** TSN database (MySQL/MariaDB only):
    ```dotenv
    TSN_DB_ENGINE=mysql
    TSN_DB_HOST=51.81.202.9

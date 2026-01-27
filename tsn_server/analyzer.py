@@ -195,38 +195,61 @@ class TranscriptAnalyzer:
         return included, "".join(block_parts)
 
     async def call_vllm(self, prompt: str) -> str:
-        """Call the vLLM server with the constructed prompt."""
-        try:
-            response = await self.http_client.post(
-                f"{self.vllm_settings.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.vllm_settings.api_key.get_secret_value()}",
-                    "Content-Type": "application/json",
+        """Call the vLLM server with automatic loopback fallback."""
+
+        def candidate_urls() -> list[str]:
+            urls = [self.vllm_settings.base_url.rstrip("/")]
+            # Try loopback as a safety net when the primary IP is unreachable.
+            fallback = "http://127.0.0.1:8001/v1"
+            if fallback not in urls:
+                urls.append(fallback)
+            return [f"{url}/chat/completions" for url in urls]
+
+        payload = {
+            "model": self.vllm_settings.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert amateur radio analyst. Use the entire"
+                        " context to detect nets, clubs, operator behavior, and"
+                        " emerging topics. Respond with strict JSON only."
+                    ),
                 },
-                json={
-                    "model": self.vllm_settings.model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are an expert amateur radio analyst. Use the entire"
-                                " context to detect nets, clubs, operator behavior, and"
-                                " emerging topics. Respond with strict JSON only."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": self.analysis_settings.max_response_tokens,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        except Exception as exc:  # pragma: no cover - network heavy
-            logger.error("vllm_call_failed", error=str(exc), prompt_size=len(prompt))
-            raise
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "max_tokens": self.analysis_settings.max_response_tokens,
+            "response_format": {"type": "json_object"},
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.vllm_settings.api_key.get_secret_value()}",
+            "Content-Type": "application/json",
+        }
+
+        errors: list[tuple[str, str]] = []
+        for endpoint in candidate_urls():
+            try:
+                response = await self.http_client.post(endpoint, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+            except httpx.ConnectError as exc:  # pragma: no cover - network heavy
+                errors.append((endpoint, str(exc)))
+                logger.warning(
+                    "vllm_call_attempt_failed",
+                    base_url=endpoint,
+                    error=str(exc),
+                    prompt_size=len(prompt),
+                )
+                continue
+            except Exception as exc:  # pragma: no cover - network heavy
+                logger.error("vllm_call_failed", base_url=endpoint, error=str(exc))
+                raise
+
+        logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
+        raise RuntimeError("All vLLM endpoints failed")
 
     def _build_prompt(self, context_block: str) -> str:
         """Build the instruction payload referencing the attached context."""
@@ -600,7 +623,11 @@ Respond ONLY with JSON in this schema:
                 select(TrendSnapshot).order_by(TrendSnapshot.window_end.desc()).limit(1)
             )
             latest = result.scalar_one_or_none()
-            if latest and (now - latest.window_end).total_seconds() < self.analysis_settings.trend_refresh_minutes * 60:
+            if latest:
+                latest_end = latest.window_end
+                if latest_end.tzinfo is None:
+                    latest_end = latest_end.replace(tzinfo=timezone.utc)
+                if (now - latest_end).total_seconds() < self.analysis_settings.trend_refresh_minutes * 60:
                 return
 
             snapshot = TrendSnapshot(

@@ -147,8 +147,8 @@ A complete ground-up rewrite of The Spoken Network with modern async architectur
 ### 6. Deployment
 
 **Docker Support**
-- `Dockerfile` with multi-stage builds (server, node, dev)
-- `docker-compose.yml` with PostgreSQL, Prometheus, Grafana
+- `Dockerfile` with multi-stage builds (server, node, web, dev)
+- `docker-compose.yml` with TSN server, TSN web, Prometheus, Grafana (MySQL provided externally)
 - GPU support with nvidia-docker
 - Health checks and restart policies
 
@@ -179,7 +179,7 @@ A complete ground-up rewrite of The Spoken Network with modern async architectur
 - Scaling strategies
 
 **Design Notes** (`docs/DESIGN_NOTES.md` - 15 pages)
-- PostgreSQL over MySQL rationale
+- MySQL-first rationale and tradeoffs
 - UUID vs auto-increment keys
 - Async architecture benefits
 - No message queue decision

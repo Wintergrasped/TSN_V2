@@ -20,7 +20,7 @@
 #### 2. Architecture Design
 - **Designed** modern async architecture with clear boundaries
 - **Defined** state machine for file processing lifecycle
-- **Specified** database schema (PostgreSQL with 12 core tables)
+- **Specified** database schema (MySQL/MariaDB with 12 core tables)
 - **Planned** deployment strategy (Docker, systemd)
 - **Documented** in `docs/ARCHITECTURE.md` (40+ page spec)
 
@@ -110,8 +110,9 @@
   - node target (lightweight)
   - dev target (with testing tools)
 - **Built** `docker-compose.yml` - Complete stack (150 lines)
-  - PostgreSQL
+  - External MySQL connection
   - TSN Server
+  - TSN Web
   - TSN Node (optional)
   - Prometheus (optional)
   - Grafana (optional)
@@ -173,12 +174,12 @@ SFTP Receiver → Ingestion → Transcription (Whisper) → Extraction (Regex+vL
                                                               ↓
                                                         Analysis (Topics+Nets)
                                                               ↓
-                                                        PostgreSQL Database
+                                                        MySQL Database
 ```
 
 ### Key Improvements
 1. **Async Everything**: asyncio, httpx, SQLAlchemy async
-2. **Database Queue**: Work queue in Postgres (no Redis needed)
+2. **Database Queue**: Work queue in MySQL (no Redis needed)
 3. **State Machine**: Explicit states (pending → uploading → transcribing → ...)
 4. **Observability**: Prometheus metrics, structured logs, health checks
 5. **Type Safety**: Pydantic for config, mypy for code
@@ -299,10 +300,10 @@ TSN_V2/
 
 ## 🔑 Critical Design Decisions
 
-### 1. PostgreSQL over MySQL
-- **Why**: JSONB, array types, better async support
-- **Trade-off**: Migration effort
-- **Benefit**: Modern features, scalability
+### 1. MySQL as the source of truth
+- **Why**: Matches existing infrastructure, easier operator handoff, proven async drivers
+- **Trade-off**: Fewer native JSON features compared to document-first engines
+- **Benefit**: Zero additional DB migration, aligns with current repeater stack
 
 ### 2. UUID Primary Keys
 - **Why**: Distributed-safe, non-sequential

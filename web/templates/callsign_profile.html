@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.callsign }} Profile{% endblock %}
+{% block content %}
+<section class="profile-hero">
+    <div>
+        <h2>{{ profile.callsign }}</h2>
+        <p class="muted">Last heard {{ profile.last_seen }} • {{ profile.seen_count }} mentions on record</p>
+        <div class="chip-row">
+            {% if profile.validated %}<span class="chip alt">QRZ Validated</span>{% endif %}
+            {% if profile.validation_method %}<span class="chip">{{ profile.validation_method|upper }}</span>{% endif %}
+        </div>
+    </div>
+    <div class="chip-row">
+        <a class="chip" href="/ncs/{{ profile.callsign }}">View NCS Profile</a>
+        <a class="chip alt" href="/api/callsigns/{{ profile.callsign }}">Download JSON</a>
+    </div>
+</section>
+
+<section class="grid profile-grid">
+    <article>
+        <h3>AI Summary</h3>
+        <p>{{ profile.ai_summary }}</p>
+        {% if profile.profile.summary %}
+            <p class="muted">Last AI refresh {{ profile.profile.last_analyzed_at or 'pending' }}</p>
+        {% endif %}
+    </article>
+    <article>
+        <h3>Activity Scores</h3>
+        <ul class="pill-list">
+            <li><span>Activity</span><strong>{{ profile.profile.activity_score or 'n/a' }}</strong></li>
+            <li><span>Engagement</span><strong>{{ profile.profile.engagement_score or 'n/a' }}</strong></li>
+        </ul>
+    </article>
+    <article>
+        <h3>Metadata</h3>
+        <pre>{{ profile.metadata | tojson(indent=2) }}</pre>
+    </article>
+</section>
+
+{% if current_user and current_user.callsign and current_user.callsign.upper() == profile.callsign %}
+<section class="card">
+    <h3>Personalize Your Profile</h3>
+    <form method="post" action="/callsigns/{{ profile.callsign }}/note">
+        <label for="note">Public note</label>
+        <textarea id="note" name="note" rows="4">{{ profile.profile.metadata.get('custom_note', '') }}</textarea>
+        <button type="submit">Save Note</button>
+    </form>
+</section>
+{% endif %}
+
+<section>
+    <h3>Club Memberships</h3>
+    <div class="table-wrapper">
+        <table>
+            <thead><tr><th>Club</th><th>Role</th><th>Last Seen</th></tr></thead>
+            <tbody>
+                {% for membership in profile.memberships %}
+                    <tr>
+                        <td><a href="/clubs/{{ membership.club }}">{{ membership.club }}</a></td>
+                        <td>{{ membership.role }}</td>
+                        <td>{{ membership.last_seen }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section>
+    <h3>Recent Net Activity</h3>
+    <div class="table-wrapper">
+        <table>
+            <thead><tr><th>Net</th><th>Club</th><th>Start</th><th>Duration</th><th>Check-in Type</th></tr></thead>
+            <tbody>
+                {% for entry in profile.net_activity %}
+                    <tr>
+                        <td>{{ entry.net }}</td>
+                        <td>{{ entry.club or '—' }}</td>
+                        <td>{{ entry.start_time }}</td>
+                        <td>{{ (entry.duration_sec // 60) if entry.duration_sec else '—' }} min</td>
+                        <td>{{ entry.checkin_type }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section>
+    <h3>Recent Mentions</h3>
+    <div class="grid">
+        {% for log in profile.recent_logs %}
+            <article class="card">
+                <p class="muted">{{ log.detected_at }}</p>
+                <p>{{ log.context or log.transcription_preview }}</p>
+            </article>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

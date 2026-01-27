@@ -2,8 +2,8 @@
 
 [Unit]
 Description=The Spoken Network v2 Server
-After=network.target postgresql.service
-Wants=postgresql.service
+After=network.target mariadb.service mysql.service
+Wants=mariadb.service mysql.service
 
 [Service]
 Type=simple

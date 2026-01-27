@@ -311,7 +311,7 @@ sftp -v tsn_upload@192.168.0.104
 # Test with psql
 psql -h 51.81.202.9 -U tsn_user -d tsn
 
-# Check firewall allows PostgreSQL port 5432
+# Check firewall allows MySQL port 3306
 # Check database accepts remote connections
 ```
 

@@ -2,7 +2,7 @@
 
 This directory hosts the FastAPI-powered web experience that replaces the legacy
 `kk7nqn.net` dashboard. It reuses the core TSN database so repeater activity is
-visible through the same MySQL/PostgreSQL instance that drives ingestion.
+visible through the same MySQL/MariaDB instance that drives ingestion.
 
 ## Features
 - Public overview landing page with repeater info, activity snapshots, and vLLM

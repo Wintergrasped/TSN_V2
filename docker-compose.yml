@@ -1,25 +1,6 @@
 # TSN v2 - Docker Compose Deployment
 
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15-alpine
-    container_name: tsn_postgres
-    environment:
-      POSTGRES_DB: tsn
-      POSTGRES_USER: tsn_user
-      POSTGRES_PASSWORD: ${TSN_DB_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tsn_user -d tsn"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   # TSN Server (Central Processing)
   tsn_server:
     build:
@@ -27,9 +8,6 @@ services:
       dockerfile: Dockerfile
       target: server
     container_name: tsn_server
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       # Database
       TSN_DB_HOST: ${TSN_DB_HOST}
@@ -168,8 +146,13 @@ services:
       - "3000:3000"
     restart: unless-stopped
 
+  incoming_data:
+  storage_data:
+  node_incoming:
+  node_archive:
+  prometheus_data:
+  grafana_data:
 volumes:
-  postgres_data:
   incoming_data:
   storage_data:
   node_incoming:

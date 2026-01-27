@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Callsign Directory{% endblock %}
 {% block content %}
-<h2>Active Callsigns</h2>
+<h2>QRZ Validated Callsigns</h2>
+<p class="muted">Only operators with confirmed QRZ validation are shown. Click a callsign to open the full profile.</p>
 <table>
     <thead>
         <tr>
@@ -9,17 +10,17 @@
             <th>First Heard</th>
             <th>Last Heard</th>
             <th>Mentions</th>
-            <th>Status</th>
+            <th>Validated Via</th>
         </tr>
     </thead>
     <tbody>
         {% for cs in callsigns %}
         <tr>
-            <td>{{ cs.callsign }}</td>
+            <td><a href="/callsigns/{{ cs.callsign }}">{{ cs.callsign }}</a></td>
             <td>{{ cs.first_seen }}</td>
             <td>{{ cs.last_seen }}</td>
             <td>{{ cs.seen_count }}</td>
-            <td>{{ 'Validated' if cs.validated else 'Unverified' }}</td>
+            <td>{{ cs.validation_method or 'QRZ' }}</td>
         </tr>
         {% endfor %}
     </tbody>

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ club.name }}{% endblock %}
+{% block content %}
+<section class="profile-hero">
+    <div>
+        <h2>{{ club.name }}</h2>
+        <p class="muted">Last analyzed {{ club.last_analyzed_at or 'unknown' }}</p>
+        {% if club.schedule %}<p class="muted">Schedule: {{ club.schedule }}</p>{% endif %}
+    </div>
+    <div class="chip-row">
+        <a class="chip" href="/api/clubs/{{ club.name }}">Export JSON</a>
+    </div>
+</section>
+
+<section class="grid profile-grid">
+    <article>
+        <h3>AI Summary</h3>
+        <p>{{ club.ai_summary }}</p>
+    </article>
+    <article>
+        <h3>Metadata</h3>
+        <pre>{{ club.metadata | tojson(indent=2) }}</pre>
+    </article>
+</section>
+
+{% if can_customize %}
+<section class="card">
+    <h3>Club Note</h3>
+    <form method="post" action="/clubs/{{ club.name }}/note">
+        <label for="club-note">Share an official blurb for fellow operators</label>
+        <textarea id="club-note" name="note" rows="4">{{ club.metadata.get('custom_note', '') }}</textarea>
+        <button type="submit">Save Note</button>
+    </form>
+</section>
+{% endif %}
+
+<section>
+    <h3>Roster</h3>
+    <div class="table-wrapper">
+        <table>
+            <thead><tr><th>Callsign</th><th>Role</th><th>Last Seen</th><th>Notes</th></tr></thead>
+            <tbody>
+                {% for member in club.members %}
+                    <tr>
+                        <td><a href="/callsigns/{{ member.callsign }}">{{ member.callsign }}</a></td>
+                        <td>{{ member.role }}</td>
+                        <td>{{ member.last_seen }}</td>
+                        <td>{{ member.notes or '—' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section>
+    <h3>Recent Nets</h3>
+    <div class="table-wrapper">
+        <table>
+            <thead><tr><th>Name</th><th>Start</th><th>Duration</th><th>Participants</th></tr></thead>
+            <tbody>
+                {% for net in club.nets %}
+                    <tr>
+                        <td>{{ net.name }}</td>
+                        <td>{{ net.start_time }}</td>
+                        <td>{{ (net.duration_sec // 60) if net.duration_sec else '—' }} min</td>
+                        <td>{{ net.participants }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}
