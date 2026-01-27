@@ -39,7 +39,7 @@ async def fetch_net_summary(session: AsyncSession, net_id: str) -> dict[str, Any
     ncs_callsign: Callsign | None = net.ncs_callsign
     audio_file: AudioFile | None = net.audio_file
 
-    participants = sorted(
+    participation_rows = sorted(
         net.participations,
         key=lambda part: (
             part.callsign.callsign if part.callsign else "zzz",
@@ -62,6 +62,34 @@ async def fetch_net_summary(session: AsyncSession, net_id: str) -> dict[str, Any
                 }
             )
 
+    participant_payload = [
+        {
+            "callsign": part.callsign.callsign if part.callsign else "(unknown)",
+            "validated": bool(part.callsign.validated) if part.callsign else False,
+            "checkin_type": part.checkin_type.value,
+            "transmissions": part.transmission_count,
+            "talk_seconds": part.estimated_talk_seconds,
+            "first_seen": part.first_seen.isoformat(),
+            "last_seen": part.last_seen.isoformat(),
+        }
+        for part in participation_rows
+    ]
+
+    total_talk = sum(p["talk_seconds"] or 0 for p in participant_payload)
+    total_transmissions = sum(p["transmissions"] or 0 for p in participant_payload)
+    checkins = len(participant_payload)
+    metrics = {
+        "checkins": checkins,
+        "validated_checkins": sum(1 for p in participant_payload if p["validated"]),
+        "late_checkins": sum(1 for p in participant_payload if p["checkin_type"].lower() == "late"),
+        "relay_checkins": sum(
+            1 for p in participant_payload if p["checkin_type"].lower() in {"relay", "proxy"}
+        ),
+        "total_talk_seconds": total_talk,
+        "avg_talk_seconds": int(total_talk / checkins) if checkins else 0,
+        "avg_transmissions": round(total_transmissions / checkins, 1) if checkins else 0,
+    }
+
     return {
         "id": str(net.id),
         "name": net.net_name,
@@ -77,18 +105,8 @@ async def fetch_net_summary(session: AsyncSession, net_id: str) -> dict[str, Any
         "summary": net.summary,
         "topics": net.topics or [],
         "statistics": net.statistics or {},
+        "metrics": metrics,
         "source_segments": net.source_segments or [],
-        "participants": [
-            {
-                "callsign": part.callsign.callsign if part.callsign else "(unknown)",
-                "validated": bool(part.callsign.validated) if part.callsign else False,
-                "checkin_type": part.checkin_type.value,
-                "transmissions": part.transmission_count,
-                "talk_seconds": part.estimated_talk_seconds,
-                "first_seen": part.first_seen.isoformat(),
-                "last_seen": part.last_seen.isoformat(),
-            }
-            for part in participants
-        ],
+        "participants": participant_payload,
         "transcripts": transcripts,
     }

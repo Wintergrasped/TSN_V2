@@ -16,6 +16,8 @@ class WebSettings(BaseSettings):
     support_email: str = Field(default="support@example.com")
     allow_registration: bool = Field(default=True, description="Enable self-service signup")
     public_dashboard: bool = Field(default=True, description="Allow anonymous dashboard access")
+    vllm_api_key: str | None = Field(default=None, description="Override vLLM API key for the portal")
+    openai_api_key: str | None = Field(default=None, description="Override OpenAI fallback key for the portal")
 
     model_config = SettingsConfigDict(env_prefix="TSN_WEB_", env_file=".env", env_file_encoding="utf-8")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, Sequence
 
 import httpx
@@ -11,19 +12,45 @@ from openai import AsyncOpenAI
 
 from tsn_common.config import get_settings
 from tsn_common.logging import get_logger
+from web.config import get_web_settings
 
 logger = get_logger(__name__)
 
 _PORTAL_LLM_TIMEOUT_SEC = 6
 
 
+def _resolve_api_keys() -> tuple[str | None, str | None]:
+    """Return (vllm_key, openai_key) using portal overrides and env fallbacks."""
+
+    llm_settings = get_settings().vllm
+    web_settings = get_web_settings()
+
+    candidates = [
+        (web_settings.vllm_api_key or "").strip(),
+        (os.getenv("TSN_WEB_VLLM_API_KEY") or "").strip(),
+        (os.getenv("TSN_VLLM_API_KEY") or "").strip(),
+        llm_settings.api_key.get_secret_value().strip(),
+    ]
+    vllm_key = next((val for val in candidates if val), None)
+
+    openai_candidates = [
+        (web_settings.openai_api_key or "").strip(),
+        (os.getenv("TSN_WEB_OPENAI_API_KEY") or "").strip(),
+        (os.getenv("TSN_OPENAI_API_KEY") or "").strip(),
+        (llm_settings.openai_api_key.get_secret_value().strip() if llm_settings.openai_api_key else ""),
+    ]
+    openai_key = next((val for val in openai_candidates if val), None)
+
+    return vllm_key, openai_key
+
+
 async def _call_vllm(messages: list[dict[str, str]], *, max_tokens: int) -> str:
     """Call the configured vLLM endpoint, falling back to loopback."""
 
     settings = get_settings().vllm
-    api_key = settings.api_key.get_secret_value()
+    api_key, _ = _resolve_api_keys()
     if not api_key:
-        raise RuntimeError("TSN_VLLM_API_KEY is not configured")
+        raise RuntimeError("TSN_VLLM_API_KEY / TSN_WEB_VLLM_API_KEY is not configured")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -70,7 +97,7 @@ async def _call_openai(messages: list[dict[str, str]], *, max_tokens: int) -> st
     """Fallback to OpenAI when configured."""
 
     settings = get_settings().vllm
-    api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
+    _, api_key = _resolve_api_keys()
     if not (settings.fallback_enabled and api_key):
         raise RuntimeError("OpenAI fallback is not configured")
 

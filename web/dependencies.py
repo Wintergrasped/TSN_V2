@@ -2,9 +2,11 @@
 
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tsn_common.db import get_session
@@ -15,11 +17,21 @@ BASE_DIR = Path(__file__).resolve().parent
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+
+def _callsign_link(value: str | None, css_class: str | None = None) -> Markup:
+    if not value:
+        return Markup("")
+    href = f"/callsigns/{quote_plus(value.strip().upper())}"
+    class_attr = f' class="{css_class}"' if css_class else ""
+    return Markup(f"<a{class_attr} href=\"{href}\">{escape(value)}</a>")
+
+
 def _inject_globals(template_env: Jinja2Templates) -> None:
     """Attach shared globals once."""
 
     template_env.env.globals.setdefault("brand_name", get_web_settings().brand_name)
     template_env.env.globals.setdefault("support_email", get_web_settings().support_email)
+    template_env.env.globals.setdefault("callsign_link", _callsign_link)
 
 
 _inject_globals(templates)

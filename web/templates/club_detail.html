@@ -42,7 +42,7 @@
             <tbody>
                 {% for member in club.members %}
                     <tr>
-                        <td><a href="/callsigns/{{ member.callsign }}">{{ member.callsign }}</a></td>
+                        <td>{{ callsign_link(member.callsign) }}</td>
                         <td>{{ member.role }}</td>
                         <td>{{ member.last_seen }}</td>
                         <td>{{ member.notes or '—' }}</td>

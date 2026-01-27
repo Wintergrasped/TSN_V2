@@ -3,7 +3,7 @@
 {% block content %}
 <section class="form-card">
     <h2>Welcome {{ current_user.display_name }}</h2>
-    <p class="muted">Callsign: {{ current_user.callsign or 'Not linked' }}</p>
+    <p class="muted">Callsign: {{ callsign_link(current_user.callsign) if current_user.callsign else 'Not linked' }}</p>
     <p>This space is ready for personalized filters, saved searches, and alerts.
        Wire up new widgets by extending `user_dashboard.html`.</p>
 </section>

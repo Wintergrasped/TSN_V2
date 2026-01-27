@@ -11,10 +11,20 @@
             <h3>Overview</h3>
             <ul class="meta-list">
                 <li><strong>Hosting club:</strong> {{ net.club or '—' }}</li>
-                <li><strong>Net Control:</strong> {{ net.ncs or 'Unknown' }}</li>
+                <li><strong>Net Control:</strong> {{ callsign_link(net.ncs) if net.ncs else 'Unknown' }}</li>
                 <li><strong>Duration:</strong> {{ (net.duration_sec // 60) }} min</li>
                 <li><strong>Participants:</strong> {{ net.participant_count }}</li>
                 <li><strong>Confidence:</strong> {{ '{:.0%}'.format(net.confidence) if net.confidence is not none else '—' }}</li>
+            </ul>
+            <h4>Engagement Metrics</h4>
+            <ul class="meta-list">
+                <li><strong>Check-ins:</strong> {{ net.metrics.checkins }}</li>
+                <li><strong>Validated:</strong> {{ net.metrics.validated_checkins }}</li>
+                <li><strong>Late arrivals:</strong> {{ net.metrics.late_checkins }}</li>
+                <li><strong>Relay/Proxy:</strong> {{ net.metrics.relay_checkins }}</li>
+                <li><strong>Total talk:</strong> {{ net.metrics.total_talk_seconds }} s</li>
+                <li><strong>Avg talk:</strong> {{ net.metrics.avg_talk_seconds }} s</li>
+                <li><strong>Avg transmissions:</strong> {{ net.metrics.avg_transmissions }}</li>
             </ul>
             {% if net.summary %}
                 <p>{{ net.summary }}</p>
@@ -32,6 +42,14 @@
                 </div>
             {% else %}
                 <p class="muted">No topics captured.</p>
+            {% endif %}
+            {% if net.statistics %}
+                <h4>Analyzer Snapshot</h4>
+                <ul class="meta-list">
+                    {% for key, value in net.statistics.items() %}
+                        <li><strong>{{ key|replace('_', ' ')|title }}:</strong> {{ value }}</li>
+                    {% endfor %}
+                </ul>
             {% endif %}
             {% if net.source_segments %}
                 <h4>Source Segments</h4>
@@ -70,7 +88,7 @@
                 {% for member in net.participants %}
                     <tr>
                         <td>
-                            {{ member.callsign }}
+                            {{ callsign_link(member.callsign) }}
                             {% if not member.validated %}
                                 <span class="chip warning">Unverified</span>
                             {% endif %}

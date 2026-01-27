@@ -26,7 +26,7 @@
                 </div>
                 <div class="chip-row">
                     {% for cs in trend.callsigns %}
-                        <span class="chip alt">{{ cs }}</span>
+                        {{ callsign_link(cs, "chip alt") }}
                     {% endfor %}
                 </div>
             {% endfor %}
@@ -59,7 +59,7 @@
         <tbody>
             {% for cs in payload.callsigns %}
             <tr>
-                <td>{{ cs.callsign }}</td>
+                <td>{{ callsign_link(cs.callsign) }}</td>
                 <td>{{ cs.last_seen }}</td>
                 <td>{{ cs.seen_count }}</td>
                 <td>{{ '✔' if cs.validated else '—' }}</td>
@@ -90,7 +90,7 @@
                             <span class="muted"> · <a href="/clubs/{{ net.club }}">{{ net.club }}</a></span>
                         {% endif %}
                     </div>
-                    <p class="muted">{{ net.start_time }} · {{ net.participants }} participants</p>
+                    <p class="muted">{{ net.start_time }} · {{ net.participants }} participants · Avg {{ net.avg_checkin_length_sec or '—' }}s</p>
                 </li>
             {% endfor %}
         </ul>

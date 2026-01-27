@@ -16,7 +16,7 @@
     <tbody>
         {% for cs in callsigns %}
         <tr>
-            <td><a href="/callsigns/{{ cs.callsign }}">{{ cs.callsign }}</a></td>
+            <td>{{ callsign_link(cs.callsign) }}</td>
             <td>{{ cs.first_seen }}</td>
             <td>{{ cs.last_seen }}</td>
             <td>{{ cs.seen_count }}</td>

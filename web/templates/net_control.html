@@ -47,7 +47,7 @@
                 {% for row in feed %}
                     <tr>
                         <td>{{ row.detected_at }}</td>
-                        <td>{{ row.callsign_id }}</td>
+                        <td>{{ callsign_link(row.callsign_id) }}</td>
                         <td>{{ row.confidence or '—' }}</td>
                         <td>{{ row.context or row.transcript }}</td>
                     </tr>

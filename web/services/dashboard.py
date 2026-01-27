@@ -216,6 +216,8 @@ async def get_recent_nets(session: AsyncSession, limit: int = 10) -> list[dict]:
             "duration_sec": net.duration_sec,
             "participants": net.participant_count,
             "confidence": net.confidence,
+            "avg_checkin_length_sec": (net.statistics or {}).get("avg_checkin_length_sec"),
+            "total_talk_seconds": (net.statistics or {}).get("total_talk_seconds"),
         }
         for net in result.scalars().all()
     ]
