@@ -119,6 +119,16 @@ section > .card,
     font-size: 0.95rem;
 }
 
+.meta-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.meta-list li {
+    margin-bottom: 0.35rem;
+}
+
 .health-list,
 .net-list {
     list-style: none;
@@ -191,6 +201,11 @@ tr:last-child td {
 .chip.alt {
     background: rgba(93, 253, 203, 0.15);
     color: #5dfdcb;
+}
+
+.chip.warning {
+    background: rgba(255, 107, 107, 0.15);
+    color: #ff6b6b;
 }
 
 .profile-hero {

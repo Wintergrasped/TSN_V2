@@ -1,6 +1,6 @@
 """Server-rendered pages for the KK7NQN-inspired dashboard."""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from web.dependencies import get_current_user, get_db_session, maybe_current_user, templates
@@ -13,6 +13,7 @@ from web.services.dashboard import (
     get_system_health,
     get_trend_highlights,
 )
+from web.services import nets
 
 router = APIRouter()
 
@@ -65,6 +66,26 @@ async def nets_page(
         {
             "request": request,
             "nets": nets,
+            "current_user": current_user,
+        },
+    )
+
+
+@router.get("/nets/{net_id}", response_class=HTMLResponse)
+async def net_summary_page(
+    request: Request,
+    net_id: str,
+    session=Depends(get_db_session),
+    current_user=Depends(maybe_current_user),
+):
+    payload = await nets.fetch_net_summary(session, net_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Net not found")
+    return templates.TemplateResponse(
+        "net_summary.html",
+        {
+            "request": request,
+            "net": payload,
             "current_user": current_user,
         },
     )

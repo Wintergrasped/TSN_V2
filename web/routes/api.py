@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from web.dependencies import get_db_session
-from web.services import net_control, profiles
+from web.services import net_control, nets, profiles
 from web.services.dashboard import (
     get_club_profiles,
     get_dashboard_payload,
@@ -39,6 +39,14 @@ async def api_callsign_detail(callsign: str, session=Depends(get_db_session)):
 @router.get("/nets")
 async def api_nets(session=Depends(get_db_session), limit: int = 100):
     return await get_recent_nets(session, limit=limit)
+
+
+@router.get("/nets/{net_id}")
+async def api_net_detail(net_id: str, session=Depends(get_db_session)):
+    payload = await nets.fetch_net_summary(session, net_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Net not found")
+    return payload
 
 
 @router.get("/transcriptions")

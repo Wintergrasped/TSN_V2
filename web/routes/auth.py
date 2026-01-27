@@ -64,8 +64,6 @@ async def register_page(
     current_user=Depends(maybe_current_user),
 ):
     settings = get_web_settings()
-    if not settings.allow_registration:
-        raise HTTPException(status_code=404)
     if current_user:
         return RedirectResponse(url="/user/dashboard", status_code=status.HTTP_302_FOUND)
     return templates.TemplateResponse(
@@ -74,7 +72,9 @@ async def register_page(
             "request": request,
             "current_user": current_user,
             "error": None,
+            "registration_open": settings.allow_registration,
         },
+        status_code=status.HTTP_200_OK if settings.allow_registration else status.HTTP_403_FORBIDDEN,
     )
 
 
@@ -89,7 +89,16 @@ async def register_action(
 ):
     settings = get_web_settings()
     if not settings.allow_registration:
-        raise HTTPException(status_code=404)
+        return templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "current_user": None,
+                "error": "Registration is currently disabled.",
+                "registration_open": False,
+            },
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
 
     try:
         user = await create_user(
@@ -107,6 +116,7 @@ async def register_action(
                 "request": request,
                 "current_user": None,
                 "error": "Email already registered",
+                "registration_open": settings.allow_registration,
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )

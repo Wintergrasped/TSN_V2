@@ -158,6 +158,28 @@ class TranscriptAnalyzer:
 
         return contexts
 
+    async def _retry_failed_analysis(self, limit: int | None = None) -> int:
+        """Move failed analysis files back into the queue when idle."""
+
+        limit = limit or self.analysis_settings.max_batch_size
+        async with get_session() as session:
+            result = await session.execute(
+                select(AudioFile)
+                .where(AudioFile.state == AudioFileState.FAILED_ANALYSIS)
+                .order_by(AudioFile.updated_at)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+            records = result.scalars().all()
+            if not records:
+                return 0
+
+            for record in records:
+                record.state = AudioFileState.QUEUED_ANALYSIS
+
+            await session.flush()
+            return len(records)
+
     def _build_context_block(self, contexts: list[ContextEntry]) -> tuple[list[ContextEntry], str]:
         """Trim transcripts into the configured context budget and build prompt text."""
         if not contexts:
@@ -628,7 +650,7 @@ Respond ONLY with JSON in this schema:
                 if latest_end.tzinfo is None:
                     latest_end = latest_end.replace(tzinfo=timezone.utc)
                 if (now - latest_end).total_seconds() < self.analysis_settings.trend_refresh_minutes * 60:
-                return
+                    return
 
             snapshot = TrendSnapshot(
                 window_start=window_start,
@@ -655,6 +677,10 @@ Respond ONLY with JSON in this schema:
 
         contexts = await self._reserve_batch()
         if not contexts:
+            retried = await self._retry_failed_analysis()
+            if retried:
+                logger.info("analysis_requeued_failed", count=retried)
+                return True
             return False
 
         included, context_block = self._build_context_block(contexts)

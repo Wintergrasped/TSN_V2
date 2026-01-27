@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Net Summary · {{ net.name }}{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-header">
+        <h2>{{ net.name }}</h2>
+        <span class="muted">{{ net.start_time }} → {{ net.end_time }}</span>
+    </div>
+    <div class="card-body grid">
+        <article>
+            <h3>Overview</h3>
+            <ul class="meta-list">
+                <li><strong>Hosting club:</strong> {{ net.club or '—' }}</li>
+                <li><strong>Net Control:</strong> {{ net.ncs or 'Unknown' }}</li>
+                <li><strong>Duration:</strong> {{ (net.duration_sec // 60) }} min</li>
+                <li><strong>Participants:</strong> {{ net.participant_count }}</li>
+                <li><strong>Confidence:</strong> {{ '{:.0%}'.format(net.confidence) if net.confidence is not none else '—' }}</li>
+            </ul>
+            {% if net.summary %}
+                <p>{{ net.summary }}</p>
+            {% else %}
+                <p class="muted">No AI summary available yet.</p>
+            {% endif %}
+        </article>
+        <article>
+            <h3>Topics</h3>
+            {% if net.topics %}
+                <div class="chip-row">
+                    {% for topic in net.topics %}
+                        <span class="chip">{{ topic }}</span>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class="muted">No topics captured.</p>
+            {% endif %}
+            {% if net.source_segments %}
+                <h4>Source Segments</h4>
+                <ul>
+                    {% for segment in net.source_segments %}
+                        <li>{{ segment }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        </article>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h3>Check-ins</h3>
+        <span class="muted">Includes unverified callsigns.</span>
+    </div>
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Callsign</th>
+                    <th>Check-in Type</th>
+                    <th>Transmissions</th>
+                    <th>Talk Time (s)</th>
+                    <th>First Seen</th>
+                    <th>Last Seen</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for member in net.participants %}
+                    <tr>
+                        <td>
+                            {{ member.callsign }}
+                            {% if not member.validated %}
+                                <span class="chip warning">Unverified</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ member.checkin_type }}</td>
+                        <td>{{ member.transmissions }}</td>
+                        <td>{{ member.talk_seconds }}</td>
+                        <td>{{ member.first_seen }}</td>
+                        <td>{{ member.last_seen }}</td>
+                    </tr>
+                {% endfor %}
+                {% if not net.participants %}
+                    <tr><td colspan="6" class="muted">No check-ins recorded.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h3>Transcripts</h3>
+        <span class="muted">All transcriptions captured for this net.</span>
+    </div>
+    {% if net.transcripts %}
+        {% for tx in net.transcripts %}
+            <article class="transcript">
+                <header>
+                    <strong>{{ tx.created_at }}</strong>
+                    <span class="muted">{{ tx.backend }} • {{ '{:.0%}'.format(tx.confidence) if tx.confidence is not none else '—' }}</span>
+                </header>
+                <pre>{{ tx.text }}</pre>
+            </article>
+        {% endfor %}
+    {% else %}
+        <p class="muted">No transcripts have been attached to this net yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

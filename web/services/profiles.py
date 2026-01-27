@@ -144,7 +144,7 @@ async def fetch_club_profile(session, club_name: str) -> dict | None:
         .options(joinedload(ClubProfile.memberships))
         .where(ClubProfile.name == trimmed)
     )
-    club = result.scalar_one_or_none()
+    club = result.unique().scalar_one_or_none()
     if club is None:
         return None
 

@@ -1,7 +1,12 @@
 """Database query helpers backing the portal dashboards."""
 
+from __future__ import annotations
+
 import asyncio
+import copy
+import time
 from collections import defaultdict
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +31,113 @@ _DEFAULT_AI_SECTIONS = {
     "callsigns": "AI summary unavailable.",
     "health": "AI summary unavailable.",
 }
+
+_ALIAS_CACHE_TTL_SEC = 300
+_SUMMARY_CACHE_TTL_SEC = 120
+
+_alias_cache: dict[str, Any] = {
+    "key": None,
+    "expires": 0.0,
+    "data": {},
+}
+_alias_task: asyncio.Task | None = None
+
+_summary_cache: dict[str, Any] = {
+    "expires": 0.0,
+    "data": _DEFAULT_AI_SECTIONS.copy(),
+}
+_summary_task: asyncio.Task | None = None
+
+
+def _club_alias_key(club_names: list[str]) -> str:
+    normalized = sorted({name.strip() for name in club_names if name})
+    return "|".join(normalized)
+
+
+def _cached_alias_map(key: str) -> dict[str, str]:
+    now = time.time()
+    if (
+        _alias_cache.get("key") == key
+        and _alias_cache.get("expires", 0) > now
+        and _alias_cache.get("data")
+    ):
+        return dict(_alias_cache["data"])
+    if _alias_cache.get("data") and _alias_cache.get("expires", 0) > now:
+        return dict(_alias_cache["data"])
+    return {}
+
+
+def _schedule_alias_refresh(club_names: list[str], cache_key: str) -> None:
+    global _alias_task
+    if not club_names:
+        return
+    if _alias_task and not _alias_task.done():
+        return
+
+    async def _refresh() -> None:
+        try:
+            result = await asyncio.wait_for(
+                merge_entities("club", club_names[:50]),
+                timeout=_AI_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("dashboard_alias_timeout", timeout_sec=_AI_TIMEOUT_SEC)
+            return
+        except Exception as exc:  # pragma: no cover - network variability
+            logger.error("dashboard_alias_failed", error=str(exc))
+            return
+
+        _alias_cache.update(
+            {
+                "key": cache_key,
+                "expires": time.time() + _ALIAS_CACHE_TTL_SEC,
+                "data": result,
+            }
+        )
+
+    _alias_task = asyncio.create_task(_refresh())
+    _alias_task.add_done_callback(_log_task_failure("alias_refresh"))
+
+
+def _schedule_summary_refresh(snapshot: dict[str, Any]) -> None:
+    global _summary_task
+    if _summary_task and not _summary_task.done():
+        return
+
+    async def _refresh() -> None:
+        try:
+            result = await asyncio.wait_for(
+                summarize_dashboard_sections(snapshot),
+                timeout=_AI_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("dashboard_ai_timeout", timeout_sec=_AI_TIMEOUT_SEC)
+            return
+        except Exception as exc:  # pragma: no cover - network variability
+            logger.error("dashboard_ai_failed", error=str(exc))
+            return
+
+        _summary_cache.update(
+            {
+                "data": result,
+                "expires": time.time() + _SUMMARY_CACHE_TTL_SEC,
+            }
+        )
+
+    _summary_task = asyncio.create_task(_refresh())
+    _summary_task.add_done_callback(_log_task_failure("dashboard_ai"))
+
+
+def _log_task_failure(label: str):
+    def _handler(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:  # pragma: no cover - noisy debug only
+            logger.debug("background_task_cancelled", task_label=label)
+        except Exception as exc:  # pragma: no cover - background failure
+            logger.error("background_task_exception", task_label=label, error=str(exc))
+
+    return _handler
 
 
 async def get_audio_queue_snapshot(session: AsyncSession) -> dict:
@@ -179,18 +291,11 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
     clubs = await get_club_profiles(session)
     health = await get_system_health(session)
 
-    alias_map: dict[str, str] = {}
     club_names = [club["name"] for club in clubs if club.get("name")]
+    alias_key = _club_alias_key(club_names)
+    alias_map: dict[str, str] = _cached_alias_map(alias_key)
     if club_names:
-        try:
-            alias_map = await asyncio.wait_for(
-                merge_entities("club", club_names),
-                timeout=_AI_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("dashboard_alias_timeout", timeout_sec=_AI_TIMEOUT_SEC)
-        except Exception as exc:  # pragma: no cover - network variability
-            logger.error("dashboard_alias_failed", error=str(exc))
+        _schedule_alias_refresh(club_names, alias_key)
     grouped: dict[str, set[str]] = defaultdict(set)
     for alias, canonical in alias_map.items():
         grouped[canonical].add(alias)
@@ -200,24 +305,23 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
         aliases = grouped.get(canonical, set())
         club["aliases"] = sorted(a for a in aliases if a != canonical)
 
-    ai_sections = _DEFAULT_AI_SECTIONS.copy()
-    try:
-        ai_sections = await asyncio.wait_for(
-            summarize_dashboard_sections(
-                {
-                    "queue": queue,
-                    "callsigns": callsigns[:10],
-                    "nets": nets[:10],
-                    "clubs": clubs[:10],
-                    "health": health[:5],
-                }
-            ),
-            timeout=_AI_TIMEOUT_SEC,
-        )
-    except asyncio.TimeoutError:
-        logger.warning("dashboard_ai_timeout", timeout_sec=_AI_TIMEOUT_SEC)
-    except Exception as exc:  # pragma: no cover - network variability
-        logger.error("dashboard_ai_failed", error=str(exc))
+    ai_sections = dict(_summary_cache.get("data", _DEFAULT_AI_SECTIONS))
+    summary_snapshot = {
+        "queue": queue,
+        "callsigns": callsigns[:10],
+        "nets": nets[:10],
+        "clubs": clubs[:10],
+        "health": health[:5],
+    }
+    if (
+        not _summary_cache.get("data")
+        or _summary_cache.get("expires", 0) <= time.time()
+        or ai_sections == _DEFAULT_AI_SECTIONS
+    ):
+        _schedule_summary_refresh(copy.deepcopy(summary_snapshot))
+
+    if not ai_sections:
+        ai_sections = _DEFAULT_AI_SECTIONS.copy()
 
     return {
         "queue": queue,

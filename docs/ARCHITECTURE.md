@@ -315,7 +315,7 @@ class Settings(BaseSettings):
     # vLLM
     vllm_base_url: str = "http://192.168.0.104:8001/v1"
     vllm_model: str = "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4"
-    vllm_api_key: SecretStr = "sk-no-auth"
+    vllm_api_key: SecretStr | None = None  # supply via TSN_VLLM_API_KEY
     
     # Processing
     max_concurrent_transcriptions: int = 4

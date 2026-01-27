@@ -118,7 +118,10 @@ class VLLMSettings(BaseSettings):
     model: str = Field(
         default="Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4", description="Model identifier"
     )
-    api_key: SecretStr = Field(default=SecretStr("sk-no-auth"), description="API key")
+    api_key: SecretStr = Field(
+        default=SecretStr(""),
+        description="API key (set via TSN_VLLM_API_KEY environment variable)",
+    )
 
     timeout_sec: int = Field(default=120, description="Request timeout")
     max_retries: int = Field(default=4, description="Max retry attempts")

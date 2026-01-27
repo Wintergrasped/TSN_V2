@@ -16,7 +16,7 @@
     <tbody>
         {% for net in nets %}
         <tr>
-            <td>{{ net.name }}</td>
+            <td><a href="/nets/{{ net.id }}">{{ net.name }}</a></td>
             <td>{{ net.club or '—' }}</td>
             <td>{{ net.start_time }}</td>
             <td>{{ net.duration_sec // 60 }}</td>

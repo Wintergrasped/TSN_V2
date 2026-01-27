@@ -98,7 +98,7 @@ TSN_WHISPER_MAX_CONCURRENT=4
 
 # vLLM
 TSN_VLLM_BASE_URL=http://localhost:8001/v1
-TSN_VLLM_API_KEY=sk-no-auth
+TSN_VLLM_API_KEY=<your_vllm_api_key>
 
 # Monitoring
 TSN_MONITORING_ENABLED=true
