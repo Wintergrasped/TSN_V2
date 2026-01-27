@@ -65,6 +65,19 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # Run orchestrator
 CMD ["python", "tsn_orchestrator.py"]
 
+# Web target (FastAPI portal)
+FROM base as web
+
+# Copy web application code
+COPY web/ ./web/
+
+EXPOSE 8080
+
+ENV PYTHONUNBUFFERED=1
+
+# Run the FastAPI app under uvicorn
+CMD ["uvicorn", "web.main:app", "--host", "0.0.0.0", "--port", "8080"]
+
 # Node target (lightweight, no GPU)
 FROM base as node
 

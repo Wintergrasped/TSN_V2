@@ -217,7 +217,7 @@ class MetricsSettings(BaseSettings):
 class ServerSettings(BaseSettings):
     """Server-side settings."""
 
-    enabled: bool = Field(default=True, description="Enable server services")
+    enabled: bool = Field(default=False, description="Enable server services")
     incoming_dir: Path | None = Field(
         default=None,
         description="Directory for incoming files from nodes",
@@ -236,7 +236,9 @@ class ServerSettings(BaseSettings):
     @model_validator(mode="after")
     def ensure_required_fields(self) -> "ServerSettings":
         if self.enabled and self.incoming_dir is None:
-            raise ValueError("incoming_dir is required when TSN_SERVER_ENABLED is true")
+            default_dir = Path("/incoming")
+            default_dir.mkdir(parents=True, exist_ok=True)
+            self.incoming_dir = default_dir
         return self
 
     model_config = SettingsConfigDict(env_prefix="TSN_SERVER_")

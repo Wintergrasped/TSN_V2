@@ -32,10 +32,10 @@ services:
         condition: service_healthy
     environment:
       # Database
-      TSN_DB_HOST: 51.81.202.9
-      TSN_DB_PORT: 3306
-      TSN_DB_NAME: repeater
-      TSN_DB_USER: server
+      TSN_DB_HOST: ${TSN_DB_HOST}
+      TSN_DB_PORT: ${TSN_DB_PORT}
+      TSN_DB_NAME: ${TSN_DB_NAME}
+      TSN_DB_USER: ${TSN_DB_USER}
       TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
       
       # Server
@@ -77,6 +77,29 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  # TSN Web Portal
+  tsn_web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    container_name: tsn_web
+    environment:
+      TSN_DB_ENGINE: ${TSN_DB_ENGINE}
+      TSN_DB_HOST: ${TSN_DB_HOST}
+      TSN_DB_PORT: ${TSN_DB_PORT}
+      TSN_DB_NAME: ${TSN_DB_NAME}
+      TSN_DB_USER: ${TSN_DB_USER}
+      TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
+      TSN_WEB_SESSION_SECRET: ${TSN_WEB_SESSION_SECRET}
+      TSN_WEB_BRAND_NAME: ${TSN_WEB_BRAND_NAME:-KK7NQN}
+      TSN_WEB_SUPPORT_EMAIL: ${TSN_WEB_SUPPORT_EMAIL:-support@example.com}
+      TSN_WEB_ALLOW_REGISTRATION: ${TSN_WEB_ALLOW_REGISTRATION:-true}
+      TSN_WEB_PUBLIC_DASHBOARD: ${TSN_WEB_PUBLIC_DASHBOARD:-true}
+    ports:
+      - "${TSN_WEB_PORT:-8081}:8080"
+    restart: unless-stopped
+
   # TSN Node (Optional - for local testing)
   tsn_node:
     build:
@@ -87,10 +110,10 @@ services:
     profiles: ["node"]  # Only start with --profile node
     environment:
       # Database
-      TSN_DB_HOST: 51.81.202.9
-      TSN_DB_PORT: 3306
-      TSN_DB_NAME: repeater
-      TSN_DB_USER: server
+      TSN_DB_HOST: ${TSN_DB_HOST}
+      TSN_DB_PORT: ${TSN_DB_PORT}
+      TSN_DB_NAME: ${TSN_DB_NAME}
+      TSN_DB_USER: ${TSN_DB_USER}
       TSN_DB_PASSWORD: ${TSN_DB_PASSWORD}
       
       # Node

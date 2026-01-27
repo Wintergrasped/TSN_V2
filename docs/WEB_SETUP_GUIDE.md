@@ -101,6 +101,29 @@ Most operators simply start the app, which performs the same operation during th
    with queue depth, callsigns, nets, and other widgets.
 3. Press `Ctrl+C` to stop the server once you confirm it works.
 
+## 5b. Run the portal with Docker Compose (optional)
+
+If you prefer containers, the repository now ships a dedicated `tsn_web` target and
+Compose service so the portal no longer shares the heavyweight TSN server image.
+
+1. Copy `.env.example` to `.env` (if you have not already) and fill in the database
+   and `TSN_WEB_*` variables. The compose file reuses `TSN_DB_*` for every service.
+2. Build and start only the web portal:
+   ```bash
+   docker compose up -d tsn_web
+   ```
+   This command uses the lightweight FastAPI image and exposes the app on
+   `TSN_WEB_PORT` (defaults to 8081 on the host).
+3. (Optional) Run the web portal alongside `tsn_server` so the analyzer and UI share
+   the same stack:
+   ```bash
+   docker compose up -d tsn_server tsn_web
+   ```
+4. Tail logs whenever needed:
+   ```bash
+   docker compose logs -f tsn_web
+   ```
+
 ---
 
 ## 6. Create a `systemd` service (recommended)
