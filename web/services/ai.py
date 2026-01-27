@@ -190,4 +190,3 @@ async def merge_entities(entity_type: str, names: Sequence[str]) -> dict[str, st
             mapping[alias] = canonical
         mapping.setdefault(canonical, canonical)
     return mapping
-*** End of File
