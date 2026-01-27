@@ -191,4 +191,3 @@ async def fetch_club_profile(session, club_name: str) -> dict | None:
 
     payload["ai_summary"] = await summarize_club(club.name, payload)
     return payload
-*** End of File

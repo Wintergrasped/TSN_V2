@@ -200,4 +200,3 @@ async def stop_net_control(
     if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return RedirectResponse("/net-control", status_code=status.HTTP_303_SEE_OTHER)
-*** End of File
