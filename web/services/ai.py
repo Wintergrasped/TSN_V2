@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Sequence
 
@@ -13,13 +14,18 @@ from tsn_common.logging import get_logger
 
 logger = get_logger(__name__)
 
+_PORTAL_LLM_TIMEOUT_SEC = 6
+
 
 async def _call_vllm(messages: list[dict[str, str]], *, max_tokens: int) -> str:
     """Call the configured vLLM endpoint, falling back to loopback."""
 
     settings = get_settings().vllm
+    api_key = settings.api_key.get_secret_value()
+    if not api_key:
+        raise RuntimeError("TSN_VLLM_API_KEY is not configured")
     headers = {
-        "Authorization": f"Bearer {settings.api_key.get_secret_value()}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -41,7 +47,8 @@ async def _call_vllm(messages: list[dict[str, str]], *, max_tokens: int) -> str:
         "max_tokens": max_tokens,
     }
 
-    async with httpx.AsyncClient(timeout=settings.timeout_sec) as client:
+    client_timeout = min(settings.timeout_sec, _PORTAL_LLM_TIMEOUT_SEC)
+    async with httpx.AsyncClient(timeout=client_timeout) as client:
         for base in base_urls:
             try:
                 response = await client.post(
@@ -115,16 +122,26 @@ async def invoke_json_prompt(
     ]
 
     try:
-        content = await _call_vllm(messages, max_tokens=max_tokens)
+        content = await asyncio.wait_for(
+            _call_vllm(messages, max_tokens=max_tokens),
+            timeout=_PORTAL_LLM_TIMEOUT_SEC,
+        )
         if content:
             return _parse_json(content)
+    except asyncio.TimeoutError:
+        logger.warning("vllm_unavailable", error="timeout", timeout_sec=_PORTAL_LLM_TIMEOUT_SEC)
     except Exception as exc:  # pragma: no cover - LLM ops
         logger.warning("vllm_unavailable", error=str(exc))
 
     try:
-        content = await _call_openai(messages, max_tokens=max_tokens)
+        content = await asyncio.wait_for(
+            _call_openai(messages, max_tokens=max_tokens),
+            timeout=_PORTAL_LLM_TIMEOUT_SEC,
+        )
         if content:
             return _parse_json(content)
+    except asyncio.TimeoutError:
+        logger.error("openai_fallback_failed", error="timeout", timeout_sec=_PORTAL_LLM_TIMEOUT_SEC)
     except Exception as exc:  # pragma: no cover - LLM ops
         logger.error("openai_fallback_failed", error=str(exc))
 

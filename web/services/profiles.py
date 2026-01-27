@@ -189,5 +189,8 @@ async def fetch_club_profile(session, club_name: str) -> dict | None:
         ],
     }
 
-    payload["ai_summary"] = await summarize_club(club.name, payload)
+    if club.summary:
+        payload["ai_summary"] = club.summary
+    else:
+        payload["ai_summary"] = await summarize_club(club.name, payload)
     return payload
