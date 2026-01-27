@@ -161,6 +161,30 @@ class AnalysisSettings(BaseSettings):
         default=30,
         description="Minimum minutes between trend snapshots to avoid churn",
     )
+    refinement_window_hours: int = Field(
+        default=18,
+        description="How far back (hours) to look when backfilling idle refinements",
+    )
+    refinement_batch_size: int = Field(
+        default=8,
+        description="How many completed files to requeue per idle refinement cycle",
+    )
+    max_refinement_passes: int = Field(
+        default=3,
+        description="Maximum number of analysis passes (primary + refinements) per audio file",
+    )
+    crosscheck_enabled: bool = Field(
+        default=False,
+        description="Enable opportunistic OpenAI Responses cross-checks",
+    )
+    crosscheck_probability: float = Field(
+        default=0.15,
+        description="Probability (0-1) that an idle refinement batch will trigger an OpenAI cross-check",
+    )
+    openai_responses_model: str = Field(
+        default="gpt-4o-mini",
+        description="Model used for OpenAI Responses cross-checks",
+    )
 
     model_config = SettingsConfigDict(env_prefix="TSN_ANALYSIS_")
 

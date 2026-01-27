@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
@@ -15,12 +17,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 import httpx
+from openai import AsyncOpenAI
 from sqlalchemy import func, select
 
 from tsn_common.config import AnalysisSettings, VLLMSettings, get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
 from tsn_common.models import (
+    AnalysisAudit,
     AudioFile,
     AudioFileState,
     Callsign,
@@ -54,6 +58,7 @@ class ContextEntry:
     transcript_text: str
     callsigns: list[str]
     snippet: str = ""
+    pass_type: str = "primary"
 
 
 class TranscriptAnalyzer:
@@ -63,6 +68,7 @@ class TranscriptAnalyzer:
         self.vllm_settings = vllm_settings
         self.analysis_settings = analysis_settings
         self.http_client = httpx.AsyncClient(timeout=vllm_settings.timeout_sec)
+        self._openai_client: AsyncOpenAI | None = None
 
         logger.info(
             "analyzer_initialized",
@@ -74,6 +80,8 @@ class TranscriptAnalyzer:
 
     async def close(self) -> None:
         await self.http_client.aclose()
+        if self._openai_client is not None:
+            await self._openai_client.close()
 
     async def _should_pause_for_transcription(self) -> bool:
         """Return True when transcription/extraction backlog should pre-empt analysis."""
@@ -143,6 +151,7 @@ class TranscriptAnalyzer:
 
         contexts: list[ContextEntry] = []
         for idx, (audio_file, transcription) in enumerate(rows, start=1):
+            metadata = audio_file.metadata_ or {}
             contexts.append(
                 ContextEntry(
                     index=idx,
@@ -153,6 +162,7 @@ class TranscriptAnalyzer:
                     transcription_id=transcription.id,
                     transcript_text=transcription.transcript_text,
                     callsigns=callsign_map.get(transcription.id, []),
+                    pass_type=metadata.get("analysis_mode", "primary"),
                 )
             )
 
@@ -185,6 +195,7 @@ class TranscriptAnalyzer:
         callsign_map = await self._load_callsign_strings([t.id for _, t in rows])
         extra_contexts: list[ContextEntry] = []
         for idx, (audio_file, transcription) in enumerate(rows, start=1):
+            metadata = audio_file.metadata_ or {}
             extra_contexts.append(
                 ContextEntry(
                     index=idx,
@@ -195,6 +206,7 @@ class TranscriptAnalyzer:
                     transcription_id=transcription.id,
                     transcript_text=transcription.transcript_text,
                     callsigns=callsign_map.get(transcription.id, []),
+                    pass_type=metadata.get("analysis_mode", "primary"),
                 )
             )
 
@@ -249,6 +261,64 @@ class TranscriptAnalyzer:
             await session.flush()
             return len(records)
 
+    async def _queue_refinement_work(self) -> int:
+        """Requeue completed audio for idle refinement passes."""
+
+        window_start = datetime.now(timezone.utc) - timedelta(
+            hours=max(1, self.analysis_settings.refinement_window_hours)
+        )
+        batch_target = max(1, self.analysis_settings.refinement_batch_size)
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(AudioFile, NetSession.id)
+                    .outerjoin(NetSession, NetSession.audio_file_id == AudioFile.id)
+                    .where(
+                        AudioFile.state == AudioFileState.COMPLETE,
+                        AudioFile.created_at >= window_start,
+                    )
+                    .order_by(AudioFile.created_at.desc())
+                    .limit(batch_target * 4)
+                    .with_for_update(skip_locked=True)
+            )
+            rows = [(row[0], row[1]) for row in result.all()]
+            if not rows:
+                return 0
+
+            # Prefer audio that never spawned a net first.
+            rows.sort(key=lambda pair: pair[1] is not None)
+
+            now = datetime.now(timezone.utc)
+            queued = 0
+            for audio_file, net_id in rows:
+                metadata = dict(audio_file.metadata_ or {})
+                passes = int(metadata.get("analysis_passes", 1))
+                if passes >= max(1, self.analysis_settings.max_refinement_passes):
+                    continue
+                if metadata.get("pending_refinement"):
+                    continue
+
+                metadata.update(
+                    {
+                        "analysis_mode": "refinement",
+                        "pending_refinement": True,
+                        "refinement_reason": "missing_net" if net_id is None else "idle_deeppass",
+                        "refinement_requested_at": now.isoformat(),
+                    }
+                )
+                audio_file.metadata_ = metadata
+                audio_file.state = AudioFileState.QUEUED_ANALYSIS
+                queued += 1
+                if queued >= batch_target:
+                    break
+
+            if not queued:
+                return 0
+
+            await session.flush()
+            logger.info("analysis_refinement_batch_enqueued", count=queued)
+            return queued
+
     def _build_context_block(self, contexts: list[ContextEntry]) -> tuple[list[ContextEntry], str]:
         """Trim transcripts into the configured context budget and build prompt text."""
         if not contexts:
@@ -285,7 +355,7 @@ class TranscriptAnalyzer:
 
         return included, "".join(block_parts)
 
-    async def call_vllm(self, prompt: str) -> str:
+    async def call_vllm(self, prompt: str) -> tuple[str, dict[str, Any]]:
         """Call the vLLM server with automatic loopback fallback."""
 
         def candidate_urls() -> list[str]:
@@ -332,7 +402,11 @@ class TranscriptAnalyzer:
                 response = await self.http_client.post(endpoint, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
-                return data["choices"][0]["message"]["content"]
+                meta = {
+                    "model": data.get("model"),
+                    "usage": data.get("usage"),
+                }
+                return data["choices"][0]["message"]["content"], meta
             except httpx.ConnectError as exc:  # pragma: no cover - network heavy
                 errors.append((endpoint, str(exc)))
                 logger.warning(
@@ -572,6 +646,7 @@ If you need more context to finish a net, include a top-level
             return
 
         async with get_session() as session:
+            existing_cache: dict[uuid.UUID, bool] = {}
             for net in nets:
                 sources_ctx = [context_map[idx] for idx in net.get("sources", []) if idx in context_map]
                 if not sources_ctx:
@@ -607,6 +682,20 @@ If you need more context to finish a net, include a top-level
                     }
                     for ctx in sources_ctx
                 ]
+
+                primary_audio_id = sources_ctx[0].audio_id
+                if primary_audio_id not in existing_cache:
+                    result = await session.execute(
+                        select(NetSession.id).where(NetSession.audio_file_id == primary_audio_id)
+                    )
+                    existing_cache[primary_audio_id] = result.scalar_one_or_none() is not None
+                if existing_cache[primary_audio_id]:
+                    logger.debug(
+                        "analysis_skip_duplicate_net",
+                        audio_file_id=str(primary_audio_id),
+                        net_name=net.get("name"),
+                    )
+                    continue
 
                 net_session = NetSession(
                     net_name=net.get("name", "Unnamed Net"),
@@ -769,6 +858,168 @@ If you need more context to finish a net, include a top-level
         await self._persist_clubs(payload.get("clubs"), context_map)
         await self._persist_trends(payload.get("trends"))
 
+    async def _finalize_audio_metadata(self, contexts: list[ContextEntry]) -> None:
+        if not contexts:
+            return
+
+        async with get_session() as session:
+            now = datetime.now(timezone.utc)
+            for ctx in contexts:
+                record = await session.get(AudioFile, ctx.audio_id)
+                if not record:
+                    continue
+                metadata = dict(record.metadata_ or {})
+                history = list(metadata.get("analysis_history") or [])
+                history.append({
+                    "pass_type": ctx.pass_type,
+                    "completed_at": now.isoformat(),
+                })
+                metadata["analysis_history"] = history[-10:]
+                metadata["analysis_passes"] = int(metadata.get("analysis_passes", 0)) + 1
+                metadata["last_analysis_pass_type"] = ctx.pass_type
+                metadata["last_analysis_completed_at"] = now.isoformat()
+                metadata.pop("analysis_mode", None)
+                metadata.pop("pending_refinement", None)
+                metadata.pop("refinement_reason", None)
+                record.metadata_ = metadata
+            await session.flush()
+
+    async def _record_analysis_audit(
+        self,
+        contexts: list[ContextEntry],
+        *,
+        backend: str,
+        pass_type: str,
+        latency_ms: int | None = None,
+        response_tokens: int | None = None,
+        observations: dict[str, Any] | None = None,
+    ) -> None:
+        if not contexts:
+            return
+
+        obs = observations or {}
+        async with get_session() as session:
+            for ctx in contexts:
+                session.add(
+                    AnalysisAudit(
+                        audio_file_id=ctx.audio_id,
+                        transcription_id=ctx.transcription_id,
+                        pass_type=pass_type,
+                        backend=backend,
+                        latency_ms=latency_ms,
+                        prompt_characters=len(ctx.snippet or ctx.transcript_text),
+                        response_tokens=response_tokens,
+                        observations={**obs, "callsigns": ctx.callsigns},
+                    )
+                )
+            await session.flush()
+
+    def _resolve_openai_client(self) -> AsyncOpenAI | None:
+        api_key = (
+            self.vllm_settings.openai_api_key.get_secret_value().strip()
+            if self.vllm_settings.openai_api_key
+            else ""
+        )
+        if not api_key:
+            return None
+        if self._openai_client is None:
+            self._openai_client = AsyncOpenAI(api_key=api_key)
+        return self._openai_client
+
+    def _extract_responses_text(self, response: Any) -> str:
+        if response is None:
+            return ""
+        chunks: list[str] = []
+        output_text = getattr(response, "output_text", None)
+        if output_text:
+            chunks.extend(output_text)
+        else:  # Fallback to iterating raw output blocks
+            for item in getattr(response, "output", []) or []:
+                for content in getattr(item, "content", []) or []:
+                    text_value = getattr(content, "text", None)
+                    if text_value:
+                        chunks.append(text_value)
+        return "".join(chunks).strip()
+
+    async def _maybe_crosscheck_with_openai(
+        self,
+        contexts: list[ContextEntry],
+        *,
+        context_block: str,
+        original_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not contexts:
+            return None
+        if not self.analysis_settings.crosscheck_enabled:
+            return None
+        if all(ctx.pass_type == "primary" for ctx in contexts):
+            return None
+        if random.random() > max(0.0, min(1.0, self.analysis_settings.crosscheck_probability)):
+            return None
+
+        client = self._resolve_openai_client()
+        if client is None:
+            logger.debug("analysis_crosscheck_skipped_no_openai")
+            return None
+
+        prompt = (
+            "You are validating previously analyzed amateur radio nets. Review the context and"
+            " confirm whether organized nets exist, catching any that may have been missed."
+            " Respond STRICTLY with the JSON schema used earlier (nets, callsigns, clubs, trends)."
+            " Focus on accuracy over creativity."
+            f"\nCONTEXT START\n{context_block}\nCONTEXT END"
+        )
+
+        try:
+            start = time.perf_counter()
+            response = await client.responses.create(
+                model=self.analysis_settings.openai_responses_model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt,
+                            }
+                        ],
+                    }
+                ],
+                max_output_tokens=self.analysis_settings.max_response_tokens,
+                temperature=0.1,
+                reasoning={"effort": "medium"},
+                response_format={"type": "json_object"},
+            )
+            latency_ms = int((time.perf_counter() - start) * 1000)
+        except Exception as exc:  # pragma: no cover - network variability
+            logger.warning("analysis_crosscheck_failed", error=str(exc))
+            return None
+
+        text_output = self._extract_responses_text(response)
+        if not text_output:
+            return None
+
+        try:
+            payload = json.loads(text_output)
+        except json.JSONDecodeError:
+            logger.warning("analysis_crosscheck_bad_json", preview=text_output[:120])
+            return None
+
+        usage = getattr(response, "usage", None) or {}
+        tokens = usage.get("total_tokens") or usage.get("output_tokens")
+        await self._record_analysis_audit(
+            contexts,
+            backend="openai_responses",
+            pass_type="crosscheck",
+            latency_ms=latency_ms,
+            response_tokens=tokens,
+            observations={
+                "nets_detected": len(payload.get("nets") or []),
+                "original_nets": len(original_payload.get("nets") or []),
+            },
+        )
+        return payload
+
     async def process_one(self) -> bool:
         if await self._should_pause_for_transcription():
             await asyncio.sleep(self.analysis_settings.idle_poll_interval_sec)
@@ -780,10 +1031,17 @@ If you need more context to finish a net, include a top-level
             if retried:
                 logger.info("analysis_requeued_failed", count=retried)
                 return True
-            return False
+            refinement = await self._queue_refinement_work()
+            if refinement:
+                contexts = await self._reserve_batch()
+            if not contexts:
+                return False
 
         extension_attempts = 0
         payload: dict[str, Any] | None = None
+        context_block = ""
+        vllm_latency_ms: int | None = None
+        response_tokens: int | None = None
 
         while True:
             included, context_block = self._build_context_block(contexts)
@@ -795,8 +1053,12 @@ If you need more context to finish a net, include a top-level
             prompt = self._build_prompt(context_block)
 
             try:
-                response = await self.call_vllm(prompt)
-                payload = json.loads(response)
+                start = time.perf_counter()
+                response_text, response_meta = await self.call_vllm(prompt)
+                vllm_latency_ms = int((time.perf_counter() - start) * 1000)
+                payload = json.loads(response_text)
+                usage = (response_meta or {}).get("usage") or {}
+                response_tokens = usage.get("total_tokens") or usage.get("completion_tokens")
             except Exception as exc:
                 unused_audio_ids = {ctx.audio_id for ctx in contexts} - {ctx.audio_id for ctx in included}
                 if unused_audio_ids:
@@ -826,12 +1088,37 @@ If you need more context to finish a net, include a top-level
         if unused_audio_ids:
             await self._release_unprocessed(list(unused_audio_ids))
 
-        await self._persist_analysis(included, payload or {})
+        batch_pass_type = included[0].pass_type if included else "primary"
+        payload = payload or {}
+        await self._persist_analysis(included, payload)
         await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.COMPLETE)
+        await self._finalize_audio_metadata(included)
+        await self._record_analysis_audit(
+            included,
+            backend="vllm",
+            pass_type=batch_pass_type,
+            latency_ms=vllm_latency_ms,
+            response_tokens=response_tokens,
+            observations={"context_extensions": extension_attempts},
+        )
+
+        cross_payload = await self._maybe_crosscheck_with_openai(
+            included,
+            context_block=context_block,
+            original_payload=payload,
+        )
+        if cross_payload:
+            await self._persist_analysis(included, cross_payload)
+            logger.info(
+                "analysis_crosscheck_applied",
+                nets=len(cross_payload.get("nets") or []),
+                callsigns=len(cross_payload.get("callsigns") or []),
+            )
 
         logger.info(
             "analysis_batch_completed",
             batch_size=len(included),
+            pass_type=batch_pass_type,
             sources=[ctx.audio_filename for ctx in included],
         )
         return True

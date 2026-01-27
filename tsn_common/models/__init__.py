@@ -10,7 +10,7 @@ from tsn_common.models.net import NetControlSession, NetSession, NetParticipatio
 from tsn_common.models.profile import CallsignProfile
 from tsn_common.models.club import ClubProfile, ClubMembership, ClubRole
 from tsn_common.models.trend import TrendSnapshot
-from tsn_common.models.support import PhoneticCorrection, ProcessingMetric, SystemHealth
+from tsn_common.models.support import AnalysisAudit, PhoneticCorrection, ProcessingMetric, SystemHealth
 
 __all__ = [
     "Base",
@@ -32,6 +32,7 @@ __all__ = [
     "ClubMembership",
     "ClubRole",
     "TrendSnapshot",
+    "AnalysisAudit",
     "PhoneticCorrection",
     "ProcessingMetric",
     "SystemHealth",

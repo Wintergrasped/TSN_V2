@@ -66,6 +66,7 @@ async def register_page(
     settings = get_web_settings()
     if current_user:
         return RedirectResponse(url="/user/dashboard", status_code=status.HTTP_302_FOUND)
+    form_state = {"display_name": "", "email": "", "callsign": ""}
     return templates.TemplateResponse(
         "register.html",
         {
@@ -73,6 +74,7 @@ async def register_page(
             "current_user": current_user,
             "error": None,
             "registration_open": settings.allow_registration,
+            "form_data": form_state,
         },
         status_code=status.HTTP_200_OK,
     )
@@ -88,6 +90,11 @@ async def register_action(
     callsign: str | None = Form(None),
 ):
     settings = get_web_settings()
+    form_state = {
+        "display_name": display_name,
+        "email": email,
+        "callsign": callsign or "",
+    }
     if not settings.allow_registration:
         return templates.TemplateResponse(
             "register.html",
@@ -96,6 +103,7 @@ async def register_action(
                 "current_user": None,
                 "error": "Registration is currently disabled.",
                 "registration_open": False,
+                "form_data": form_state,
             },
             status_code=status.HTTP_403_FORBIDDEN,
         )
@@ -117,6 +125,20 @@ async def register_action(
                 "current_user": None,
                 "error": "Email already registered",
                 "registration_open": settings.allow_registration,
+                "form_data": form_state,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except ValueError as exc:
+        await session.rollback()
+        return templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "current_user": None,
+                "error": str(exc),
+                "registration_open": settings.allow_registration,
+                "form_data": form_state,
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )

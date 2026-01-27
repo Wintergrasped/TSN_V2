@@ -88,6 +88,40 @@ footer {
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
+.stats-grid {
+    display: grid;
+    gap: 1.2rem;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    margin-bottom: 2rem;
+}
+
+.stat-card {
+    background: linear-gradient(140deg, rgba(255, 159, 28, 0.18), rgba(93, 253, 203, 0.08));
+    border-radius: 1rem;
+    padding: 1rem 1.2rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 20px 35px rgba(5, 6, 10, 0.25);
+}
+
+.stat-card .label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin: 0 0 0.35rem;
+}
+
+.stat-card .value {
+    font-family: var(--font-display);
+    font-size: clamp(1.8rem, 3vw, 2.8rem);
+    margin: 0;
+}
+
+.stat-card .detail {
+    margin: 0.25rem 0 0;
+    color: var(--muted);
+}
+
 article,
 section > .card,
 .card {
@@ -260,18 +294,59 @@ tr:last-child td {
     margin-bottom: 1rem;
 }
 
-.form-card {
-    max-width: 420px;
-    margin: 0 auto;
-    background: var(--panel);
-    padding: 2rem;
-    border-radius: 1.25rem;
+.form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.form-field span {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.form-field small {
+    max-width: 720px;
+}
+
+.form-card__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    margin-bottom: 1.2rem;
 }
 
 .form-card form {
     display: flex;
     flex-direction: column;
     gap: 0.9rem;
+}
+
+.form-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.form-field small {
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: 0.75rem;
+    color: var(--muted);
 }
 
 .form-card input,
@@ -291,6 +366,12 @@ tr:last-child td {
     color: #1b1c1f;
     font-weight: 700;
     cursor: pointer;
+}
+
+.form-hint {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin: 0.3rem 0 0.8rem;
 }
 
 .error {

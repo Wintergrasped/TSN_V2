@@ -3,11 +3,12 @@ Support models - corrections, metrics, health checks.
 """
 
 from datetime import datetime
+import uuid
 
 from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from tsn_common.models.base import Base
+from tsn_common.models.base import Base, GUID
 
 
 class PhoneticCorrection(Base):
@@ -72,3 +73,23 @@ class SystemHealth(Base):
 
     def __repr__(self) -> str:
         return f"<SystemHealth(component={self.component!r}, status={self.status})>"
+
+
+class AnalysisAudit(Base):
+    """Per-audio analysis pass tracking for stats and tuning."""
+
+    __tablename__ = "analysis_audits"
+
+    audio_file_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
+    transcription_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
+    pass_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    backend: Mapped[str] = mapped_column(String(32), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_characters: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    response_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observations: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+    __table_args__ = (Index("ix_analysis_audits_audio_backend", "audio_file_id", "backend"),)
+
+    def __repr__(self) -> str:
+        return f"<AnalysisAudit(audio_file_id={self.audio_file_id}, pass={self.pass_type})>"

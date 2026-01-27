@@ -9,13 +9,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from web.models.user import PortalUser
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+
+_MIN_PASSWORD_LEN = 8
+_MAX_PASSWORD_LEN = 256
+
+
+def _validate_password(password: str) -> str:
+    if not isinstance(password, str):
+        raise ValueError("Password must be a string")
+    if len(password) < _MIN_PASSWORD_LEN:
+        raise ValueError("Password must be at least 8 characters long")
+    if len(password) > _MAX_PASSWORD_LEN:
+        raise ValueError("Password must be 256 characters or fewer")
+    return password
 
 
 def hash_password(password: str) -> str:
     """Return a salted hash suitable for storage."""
 
-    return pwd_context.hash(password)
+    normalized = _validate_password(password)
+    return pwd_context.hash(normalized)
 
 
 def verify_password(password: str, hashed: str) -> bool:
@@ -46,10 +60,14 @@ async def create_user(
     """Create and persist a new PortalUser."""
 
     normalized_email = email.lower()
+    safe_display = display_name.strip()
+    if not safe_display:
+        raise ValueError("Display name is required")
+    safe_callsign = callsign.strip().upper() if callsign else None
     user = PortalUser(
         email=normalized_email,
-        display_name=display_name,
-        callsign=callsign,
+        display_name=safe_display,
+        callsign=safe_callsign,
         password_hash=hash_password(password),
     )
     session.add(user)

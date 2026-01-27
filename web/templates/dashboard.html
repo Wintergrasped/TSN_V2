@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Activity{% endblock %}
 {% block content %}
+<section class="stats-grid">
+    {% for card in payload.stats_cards %}
+        <article class="stat-card">
+            <p class="label">{{ card.label }}</p>
+            <p class="value">{{ "{:,}".format(card.value) }}</p>
+            <p class="detail">{{ card.detail }}</p>
+        </article>
+    {% endfor %}
+</section>
 <section class="grid">
     <article>
         <h2>Queue Depth</h2>

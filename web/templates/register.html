@@ -1,8 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Create account{% endblock %}
 {% block content %}
-<section class="form-card">
-    <h2>Register</h2>
+<section class="form-card form-card--wide">
+    <header class="form-card__header">
+        <div>
+            <h2>Register</h2>
+            <p class="tagline">Claim a portal account to follow nets, operators, and club stats.</p>
+        </div>
+        <span class="muted">Bcrypt + SHA256 · 2FA coming soon</span>
+    </header>
     {% if error %}
         <p class="error">{{ error }}</p>
     {% endif %}
@@ -11,10 +17,25 @@
     {% endif %}
     <form method="post" action="/register">
         <fieldset {% if not registration_open %}disabled{% endif %}>
-            <label>Display name<input type="text" name="display_name" required /></label>
-            <label>Email<input type="email" name="email" required /></label>
-            <label>Callsign<input type="text" name="callsign" placeholder="Optional" /></label>
-            <label>Password<input type="password" name="password" required minlength="8" /></label>
+            <div class="form-grid">
+                <label class="form-field">
+                    <span>Display name</span>
+                    <input type="text" name="display_name" required maxlength="80" autocomplete="name" value="{{ form_data.display_name if form_data else '' }}" />
+                </label>
+                <label class="form-field">
+                    <span>Email</span>
+                    <input type="email" name="email" required autocomplete="email" value="{{ form_data.email if form_data else '' }}" />
+                </label>
+                <label class="form-field">
+                    <span>Callsign <small>(optional)</small></span>
+                    <input type="text" name="callsign" placeholder="KK7NQN" inputmode="text" autocapitalize="characters" value="{{ form_data.callsign if form_data else '' }}" />
+                </label>
+                <label class="form-field">
+                    <span>Password</span>
+                    <input type="password" name="password" required minlength="8" maxlength="256" autocomplete="new-password" />
+                </label>
+            </div>
+            <p class="form-hint">Use 8–256 characters. We hash with bcrypt+SHA256 so long passphrases stay safe. Callsigns are optional but help link dashboards.</p>
             <button type="submit">Create account</button>
         </fieldset>
     </form>

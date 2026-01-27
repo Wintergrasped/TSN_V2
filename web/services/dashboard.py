@@ -6,6 +6,7 @@ import asyncio
 import copy
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -16,7 +17,7 @@ from tsn_common.models.audio import AudioFile
 from tsn_common.models.callsign import Callsign, ValidationMethod
 from tsn_common.models.club import ClubProfile
 from tsn_common.models.net import NetSession
-from tsn_common.models.support import SystemHealth
+from tsn_common.models.support import AnalysisAudit, SystemHealth
 from tsn_common.models.transcription import Transcription
 from tsn_common.models.trend import TrendSnapshot
 from web.services.ai import merge_entities, summarize_dashboard_sections
@@ -282,6 +283,43 @@ async def get_system_health(session: AsyncSession) -> list[dict]:
     ]
 
 
+async def get_global_stats(session: AsyncSession) -> dict[str, int]:
+    now = datetime.now(timezone.utc)
+    recent_cutoff = now - timedelta(days=7)
+
+    total_callsigns = await session.scalar(select(func.count(Callsign.id))) or 0
+    validated_callsigns = await session.scalar(
+        select(func.count(Callsign.id)).where(Callsign.validated.is_(True))
+    ) or 0
+    recent_callsigns = await session.scalar(
+        select(func.count(Callsign.id)).where(Callsign.last_seen >= recent_cutoff)
+    ) or 0
+
+    audio_total = await session.scalar(select(func.count(AudioFile.id))) or 0
+    audio_recent = await session.scalar(
+        select(func.count(AudioFile.id)).where(AudioFile.created_at >= recent_cutoff)
+    ) or 0
+    transcript_total = await session.scalar(select(func.count(Transcription.id))) or 0
+    net_total = await session.scalar(select(func.count(NetSession.id))) or 0
+
+    ai_passes_total = await session.scalar(select(func.count(AnalysisAudit.id))) or 0
+    ai_passes_recent = await session.scalar(
+        select(func.count(AnalysisAudit.id)).where(AnalysisAudit.created_at >= recent_cutoff)
+    ) or 0
+
+    return {
+        "callsigns_total": total_callsigns,
+        "callsigns_validated": validated_callsigns,
+        "callsigns_recent": recent_callsigns,
+        "audio_total": audio_total,
+        "audio_recent": audio_recent,
+        "transcripts_total": transcript_total,
+        "nets_total": net_total,
+        "ai_passes_total": ai_passes_total,
+        "ai_passes_recent": ai_passes_recent,
+    }
+
+
 async def get_dashboard_payload(session: AsyncSession) -> dict:
     """Aggregate everything the landing page requires."""
 
@@ -292,6 +330,7 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
     trends = await get_trend_highlights(session)
     clubs = await get_club_profiles(session)
     health = await get_system_health(session)
+    stats = await get_global_stats(session)
 
     club_names = [club["name"] for club in clubs if club.get("name")]
     alias_key = _club_alias_key(club_names)
@@ -325,6 +364,34 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
     if not ai_sections:
         ai_sections = _DEFAULT_AI_SECTIONS.copy()
 
+    stats_cards = [
+        {
+            "label": "AI Passes",
+            "value": stats["ai_passes_total"],
+            "detail": f"{stats['ai_passes_recent']:,} in 7d",
+        },
+        {
+            "label": "Callsigns Logged",
+            "value": stats["callsigns_total"],
+            "detail": f"{stats['callsigns_recent']:,} new this week",
+        },
+        {
+            "label": "QRZ Validated",
+            "value": stats["callsigns_validated"],
+            "detail": "Auto-verified",
+        },
+        {
+            "label": "Audio Files",
+            "value": stats["audio_total"],
+            "detail": f"{stats['transcripts_total']:,} transcripts",
+        },
+        {
+            "label": "Nets Logged",
+            "value": stats["nets_total"],
+            "detail": "Organized sessions",
+        },
+    ]
+
     return {
         "queue": queue,
         "callsigns": callsigns,
@@ -334,4 +401,6 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
         "clubs": clubs,
         "health": health,
         "ai_summaries": ai_sections,
+        "stats": stats,
+        "stats_cards": stats_cards,
     }
