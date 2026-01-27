@@ -158,6 +158,75 @@ class TranscriptAnalyzer:
 
         return contexts
 
+    async def _reserve_additional_after(self, after: datetime, limit: int) -> list[ContextEntry]:
+        """Reserve extra contexts that occur after the provided timestamp."""
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(AudioFile, Transcription)
+                .join(Transcription, AudioFile.id == Transcription.audio_file_id)
+                .where(
+                    AudioFile.state == AudioFileState.QUEUED_ANALYSIS,
+                    AudioFile.created_at > after,
+                )
+                .order_by(AudioFile.created_at)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+            rows = result.all()
+
+            if not rows:
+                return []
+
+            for audio_file, _ in rows:
+                audio_file.state = AudioFileState.ANALYZING
+            await session.flush()
+
+        callsign_map = await self._load_callsign_strings([t.id for _, t in rows])
+        extra_contexts: list[ContextEntry] = []
+        for idx, (audio_file, transcription) in enumerate(rows, start=1):
+            extra_contexts.append(
+                ContextEntry(
+                    index=idx,
+                    audio_id=audio_file.id,
+                    audio_filename=audio_file.filename,
+                    audio_created_at=audio_file.created_at,
+                    audio_duration_sec=audio_file.duration_sec,
+                    transcription_id=transcription.id,
+                    transcript_text=transcription.transcript_text,
+                    callsigns=callsign_map.get(transcription.id, []),
+                )
+            )
+
+        return extra_contexts
+
+    async def _extend_context_window(
+        self,
+        contexts: list[ContextEntry],
+        request: dict[str, Any],
+    ) -> list[ContextEntry]:
+        """Honor an LLM context_request by appending more transcripts when available."""
+
+        if not contexts:
+            return []
+
+        after_index_raw = request.get("after_context")
+        try:
+            after_index = int(after_index_raw)
+        except (TypeError, ValueError):
+            after_index = len(contexts)
+        after_index = max(1, min(after_index, len(contexts)))
+        pivot = contexts[after_index - 1]
+
+        limit_raw = request.get("min_segments") or request.get("min_transcripts")
+        try:
+            limit = int(limit_raw)
+        except (TypeError, ValueError):
+            limit = self.analysis_settings.max_batch_size
+        limit = max(1, min(limit, self.analysis_settings.max_batch_size))
+
+        return await self._reserve_additional_after(pivot.audio_created_at, limit)
+
     async def _retry_failed_analysis(self, limit: int | None = None) -> int:
         """Move failed analysis files back into the queue when idle."""
 
@@ -222,10 +291,17 @@ class TranscriptAnalyzer:
         def candidate_urls() -> list[str]:
             urls = [self.vllm_settings.base_url.rstrip("/")]
             # Try loopback as a safety net when the primary IP is unreachable.
-            fallback = "http://127.0.0.1:8001/v1"
+            fallback = "http://127.0.0.1:8001"
             if fallback not in urls:
                 urls.append(fallback)
-            return [f"{url}/chat/completions" for url in urls]
+
+            def _endpoint(url: str) -> str:
+                url = url.rstrip("/")
+                if url.endswith("/v1"):
+                    return f"{url}/chat/completions"
+                return f"{url}/v1/chat/completions"
+
+            return [_endpoint(url) for url in urls]
 
         payload = {
             "model": self.vllm_settings.model,
@@ -284,7 +360,10 @@ CONTEXT END
 
 Tasks (minimum requirements):
 1. Net Identification: find organized nets, determine NCS, club ties, roster
-   (normal, late, short time/IO, relay), net type, duration, topics, stats.
+    (normal, late, short time/IO, relay), net type, duration, topics, stats.
+    Only emit a net if it spans >=2 transcripts (sources) AND has >=2
+    participants beyond just NCS. If you cannot satisfy those constraints with
+    the current context, request more transcripts instead of emitting a net.
 2. Callsign Topic History & Profiles: for every callsign mentioned, summarize
    favorite topics, recent behavior, whether they were NCS, late, or open-QSO,
    and surface transcripts where notable traffic occurred.
@@ -313,7 +392,7 @@ Respond ONLY with JSON in this schema:
         {{"callsign": "W1ABC", "checkin_type": "regular|late|io|proxy|relay",
           "talk_time_sec": 45, "notes": "..."}}
       ],
-      "sources": [transcript_numbers]
+            "sources": [transcript_numbers]
     }}
   ],
   "callsigns": [
@@ -345,6 +424,10 @@ Respond ONLY with JSON in this schema:
      "window_hours": 4
   }}
 }}
+
+If you need more context to finish a net, include a top-level
+"context_request" object such as
+{"after_context": 4, "min_segments": 2, "reason": "Net still in progress"}.
 """
 
     async def _mark_audio_files(self, audio_ids: Sequence[uuid.UUID], state: AudioFileState, failed: bool = False) -> None:
@@ -494,6 +577,22 @@ Respond ONLY with JSON in this schema:
                 if not sources_ctx:
                     continue
 
+                participant_entries = [entry for entry in (net.get("participants") or []) if entry.get("callsign")]
+                if len(sources_ctx) < 2:
+                    logger.info(
+                        "analysis_skip_net_insufficient_sources",
+                        net_name=net.get("name"),
+                        sources=len(sources_ctx),
+                    )
+                    continue
+                if len(participant_entries) < 2:
+                    logger.info(
+                        "analysis_skip_net_insufficient_participants",
+                        net_name=net.get("name"),
+                        participants=len(participant_entries),
+                    )
+                    continue
+
                 start_time = min(ctx.audio_created_at for ctx in sources_ctx)
                 duration_sec = int(net.get("stats", {}).get("duration_minutes", 0) * 60) or self._effective_duration(sources_ctx)
                 end_time = start_time + timedelta(seconds=duration_sec)
@@ -517,7 +616,7 @@ Respond ONLY with JSON in this schema:
                     start_time=start_time,
                     end_time=end_time,
                     duration_sec=duration_sec,
-                    participant_count=len(net.get("participants", [])),
+                    participant_count=len(participant_entries),
                     confidence=float(net.get("stats", {}).get("confidence", 0.75)),
                     summary=summary,
                     topics=topics,
@@ -535,7 +634,7 @@ Respond ONLY with JSON in this schema:
 
                 start = start_time
                 end = end_time
-                for participant in net.get("participants", []):
+                for participant in participant_entries:
                     participant_callsign = participant.get("callsign")
                     callsign_record = await self._get_or_create_callsign(session, participant_callsign)
                     if not callsign_record:
@@ -683,34 +782,59 @@ Respond ONLY with JSON in this schema:
                 return True
             return False
 
-        included, context_block = self._build_context_block(contexts)
-        if not included:
-            await self._release_unprocessed([ctx.audio_id for ctx in contexts])
-            logger.warning("analysis_batch_skipped_no_context")
-            return False
+        extension_attempts = 0
+        payload: dict[str, Any] | None = None
+
+        while True:
+            included, context_block = self._build_context_block(contexts)
+            if not included:
+                await self._release_unprocessed([ctx.audio_id for ctx in contexts])
+                logger.warning("analysis_batch_skipped_no_context")
+                return False
+
+            prompt = self._build_prompt(context_block)
+
+            try:
+                response = await self.call_vllm(prompt)
+                payload = json.loads(response)
+            except Exception as exc:
+                unused_audio_ids = {ctx.audio_id for ctx in contexts} - {ctx.audio_id for ctx in included}
+                if unused_audio_ids:
+                    await self._release_unprocessed(list(unused_audio_ids))
+                logger.error("analysis_batch_failed", error=str(exc), exc_info=True)
+                await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.FAILED_ANALYSIS, failed=True)
+                return False
+
+            context_request = payload.get("context_request") if isinstance(payload, dict) else None
+            if context_request and extension_attempts < self.analysis_settings.max_context_extensions:
+                extra_contexts = await self._extend_context_window(contexts, context_request)
+                if extra_contexts:
+                    contexts.extend(extra_contexts)
+                    contexts.sort(key=lambda ctx: ctx.audio_created_at)
+                    extension_attempts += 1
+                    logger.info(
+                        "analysis_extending_context",
+                        added=len(extra_contexts),
+                        attempts=extension_attempts,
+                        request=context_request,
+                    )
+                    continue
+                logger.warning("analysis_context_request_unfulfilled", request=context_request)
+            break
 
         unused_audio_ids = {ctx.audio_id for ctx in contexts} - {ctx.audio_id for ctx in included}
         if unused_audio_ids:
             await self._release_unprocessed(list(unused_audio_ids))
 
-        prompt = self._build_prompt(context_block)
+        await self._persist_analysis(included, payload or {})
+        await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.COMPLETE)
 
-        try:
-            response = await self.call_vllm(prompt)
-            payload = json.loads(response)
-            await self._persist_analysis(included, payload)
-            await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.COMPLETE)
-
-            logger.info(
-                "analysis_batch_completed",
-                batch_size=len(included),
-                sources=[ctx.audio_filename for ctx in included],
-            )
-            return True
-        except Exception as exc:
-            logger.error("analysis_batch_failed", error=str(exc), exc_info=True)
-            await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.FAILED_ANALYSIS, failed=True)
-            return False
+        logger.info(
+            "analysis_batch_completed",
+            batch_size=len(included),
+            sources=[ctx.audio_filename for ctx in included],
+        )
+        return True
 
     async def run_worker(self, worker_id: int = 0) -> None:
         logger.info("analysis_worker_started", worker_id=worker_id)

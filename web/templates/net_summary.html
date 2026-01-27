@@ -35,9 +35,13 @@
             {% endif %}
             {% if net.source_segments %}
                 <h4>Source Segments</h4>
-                <ul>
+                <ul class="meta-list">
                     {% for segment in net.source_segments %}
-                        <li>{{ segment }}</li>
+                        <li>
+                            <strong>{{ segment.captured }}</strong>
+                            <span class="muted">· {{ segment.filename }}</span>
+                            <code>{{ segment.transcription_id[:8] }}</code>
+                        </li>
                     {% endfor %}
                 </ul>
             {% endif %}

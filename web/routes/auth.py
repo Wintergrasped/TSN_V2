@@ -74,7 +74,7 @@ async def register_page(
             "error": None,
             "registration_open": settings.allow_registration,
         },
-        status_code=status.HTTP_200_OK if settings.allow_registration else status.HTTP_403_FORBIDDEN,
+        status_code=status.HTTP_200_OK,
     )
 
 

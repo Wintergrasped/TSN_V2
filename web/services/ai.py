@@ -28,6 +28,12 @@ async def _call_vllm(messages: list[dict[str, str]], *, max_tokens: int) -> str:
     if loopback not in base_urls:
         base_urls.append(loopback)
 
+    def _endpoint(base: str) -> str:
+        base = base.rstrip("/")
+        if base.endswith("/v1"):
+            return f"{base}/chat/completions"
+        return f"{base}/v1/chat/completions"
+
     payload = {
         "model": settings.model,
         "messages": messages,
@@ -39,7 +45,7 @@ async def _call_vllm(messages: list[dict[str, str]], *, max_tokens: int) -> str:
         for base in base_urls:
             try:
                 response = await client.post(
-                    f"{base}/v1/chat/completions",
+                    _endpoint(base),
                     headers=headers,
                     json=payload,
                 )

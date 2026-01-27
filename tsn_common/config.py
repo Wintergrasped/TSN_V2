@@ -140,6 +140,10 @@ class AnalysisSettings(BaseSettings):
 
     worker_count: int = Field(default=2, description="Concurrent analysis workers")
     max_batch_size: int = Field(default=4, description="Max transcripts per analysis batch")
+    max_context_extensions: int = Field(
+        default=2,
+        description="How many times analysis can append extra transcripts when LLM requests more context",
+    )
     context_char_budget: int = Field(
         default=28000,
         description="Approximate character budget to stay within the 32k token window",

@@ -167,7 +167,7 @@ async def fetch_club_profile(session, club_name: str) -> dict | None:
         "summary": club.summary,
         "schedule": club.schedule,
         "last_analyzed_at": club.last_analyzed_at.isoformat() if club.last_analyzed_at else None,
-        "metadata": club.metadata_,
+        "metadata": club.metadata_ or {},
         "members": [
             {
                 "callsign": callsign.callsign,
