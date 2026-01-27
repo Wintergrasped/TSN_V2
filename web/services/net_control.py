@@ -2,17 +2,45 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from tsn_common.models import CallsignLog, NetControlSession, Transcription
 
+_net_ctl_table_ready = False
+_net_ctl_lock = asyncio.Lock()
+
+
+async def _ensure_net_control_table(session) -> None:
+    """Create the NetControlSession table on-the-fly if migrations were skipped."""
+
+    global _net_ctl_table_ready
+    if _net_ctl_table_ready:
+        return
+
+    async with _net_ctl_lock:
+        if _net_ctl_table_ready:
+            return
+        bind = session.get_bind() if hasattr(session, "get_bind") else getattr(session, "bind", None)
+        if bind is None:
+            return
+        try:
+            async with bind.begin() as conn:
+                await conn.run_sync(NetControlSession.__table__.create, checkfirst=True)
+            _net_ctl_table_ready = True
+        except SQLAlchemyError:
+            # If creation fails we surface the original error during normal query/insert
+            pass
+
 
 async def list_sessions(session, limit: int = 10) -> list[dict]:
+    await _ensure_net_control_table(session)
     result = await session.execute(
         select(NetControlSession)
         .order_by(NetControlSession.started_at.desc())
@@ -22,6 +50,7 @@ async def list_sessions(session, limit: int = 10) -> list[dict]:
 
 
 async def get_active_session(session) -> dict | None:
+    await _ensure_net_control_table(session)
     result = await session.execute(
         select(NetControlSession)
         .where(NetControlSession.status == "active")
@@ -40,6 +69,7 @@ async def start_session(
     started_by_callsign: str | None,
     notes: str | None = None,
 ) -> dict:
+    await _ensure_net_control_table(session)
     record = NetControlSession(
         name=name.strip() or "Unlabeled Net",
         status="active",
@@ -54,6 +84,7 @@ async def start_session(
 
 
 async def stop_session(session, session_id: uuid.UUID) -> dict | None:
+    await _ensure_net_control_table(session)
     record = await session.get(NetControlSession, session_id)
     if record is None:
         return None
