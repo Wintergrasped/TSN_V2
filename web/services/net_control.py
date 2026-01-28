@@ -27,12 +27,11 @@ async def _ensure_net_control_table(session) -> None:
     async with _net_ctl_lock:
         if _net_ctl_table_ready:
             return
-        bind = session.get_bind() if hasattr(session, "get_bind") else getattr(session, "bind", None)
-        if bind is None:
-            return
         try:
-            async with bind.begin() as conn:
-                await conn.run_sync(NetControlSession.__table__.create, checkfirst=True)
+            async def _create_table(sync_conn):
+                NetControlSession.__table__.create(bind=sync_conn, checkfirst=True)
+
+            await session.run_sync(_create_table)
             _net_ctl_table_ready = True
         except SQLAlchemyError:
             # If creation fails we surface the original error during normal query/insert

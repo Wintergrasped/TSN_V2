@@ -9,6 +9,7 @@ from web.dependencies import get_current_user, get_db_session, maybe_current_use
 from web.services.dashboard import (
     get_club_profiles,
     get_dashboard_payload,
+    get_recent_callsigns,
     get_recent_nets,
     get_recent_transcriptions,
     get_system_health,

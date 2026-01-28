@@ -158,8 +158,16 @@ class AnalysisSettings(BaseSettings):
         description="Minimum queued analysis items required to ignore transcription pauses",
     )
     idle_poll_interval_sec: float = Field(
-        default=2.0,
-        description="Sleep interval when no analysis work is available",
+        default=0.1,
+        description="Sleep interval when no analysis work is available (reduced to 0.1s for aggressive keep-hot)",
+    )
+    aggressive_backfill_enabled: bool = Field(
+        default=True,
+        description="Aggressively chain multiple background tasks to keep vLLM continuously loaded",
+    )
+    idle_work_chain_limit: int = Field(
+        default=10,
+        description="Maximum number of consecutive idle work tasks before yielding (prevents infinite loops)",
     )
     trend_refresh_minutes: int = Field(
         default=30,

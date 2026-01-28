@@ -89,6 +89,9 @@ class TranscriptAnalyzer:
         self._gpu_last_value: float | None = None
         self._gpu_warned_missing: bool = False
         self._gpu_last_persist: float = 0.0
+        self._idle_start_time: float | None = None
+        self._total_idle_ms: int = 0
+        self._idle_streak_count: int = 0
 
         logger.info(
             "analyzer_initialized",
@@ -324,9 +327,21 @@ class TranscriptAnalyzer:
                 utilization_pct=value,
                 sample_source="nvidia-smi",
                 is_saturated=value >= self.analysis_settings.gpu_saturation_threshold_pct,
+                notes=f\"idle_streak={self._idle_streak_count}, total_idle_ms={self._total_idle_ms}\",
             )
             session.add(sample)
             await session.flush()
+        
+        # Log aggressive warnings when GPU is underutilized
+        if value < self.analysis_settings.gpu_low_utilization_pct:
+            logger.warning(
+                \"gpu_underutilized_warning\",
+                utilization=value,
+                threshold=self.analysis_settings.gpu_low_utilization_pct,
+                idle_streak=self._idle_streak_count,
+                total_idle_ms=self._total_idle_ms,
+                aggressive_backfill=self.analysis_settings.aggressive_backfill_enabled,
+            )
 
     async def _gpu_is_underutilized(self) -> bool:
         """True when GPU utilization is below the configured threshold."""
@@ -554,6 +569,180 @@ class TranscriptAnalyzer:
             return "overdrive_requeue"
 
         return None
+
+    async def _aggressive_backfill_work(self) -> int:
+        """Chain multiple idle work types to keep vLLM continuously loaded.
+        
+        Returns the number of work items queued/completed.
+        """
+        if not self.analysis_settings.aggressive_backfill_enabled:
+            return 0
+
+        total_work = 0
+        chain_limit = max(1, self.analysis_settings.idle_work_chain_limit)
+
+        # Priority 1: Rescue failed analysis (always good to retry)
+        rescued = await self._retry_failed_analysis()
+        if rescued > 0:
+            total_work += rescued
+            logger.debug("aggressive_backfill_rescued_failed", count=rescued)
+
+        # Priority 2: Smoothing (quick wins, improves quality)
+        for _ in range(min(3, chain_limit)):
+            if await self._run_idle_smoothing_pass():
+                total_work += 1
+            else:
+                break
+
+        # Priority 3: Refinement passes (deeper analysis)
+        queued = await self._queue_refinement_work()
+        if queued > 0:
+            total_work += queued
+            logger.debug("aggressive_backfill_refinement", count=queued)
+
+        # Priority 4: Profile refresh (maintains profiles)
+        for _ in range(min(2, chain_limit)):
+            if await self._run_profile_refresh():
+                total_work += 1
+            else:
+                break
+
+        # Priority 5: Overdrive re-analysis (heaviest work)
+        overdrive_queued = await self._queue_overdrive_work()
+        if overdrive_queued > 0:
+            total_work += overdrive_queued
+            logger.debug("aggressive_backfill_overdrive", count=overdrive_queued)
+
+        # Priority 6: Generate preemptive profiles for new callsigns
+        preemptive = await self._queue_preemptive_profiles()
+        if preemptive > 0:
+            total_work += preemptive
+            logger.debug("aggressive_backfill_preemptive_profiles", count=preemptive)
+
+        # Priority 7: Deep club analysis
+        club_work = await self._queue_club_deep_analysis()
+        if club_work > 0:
+            total_work += club_work
+            logger.debug("aggressive_backfill_club_analysis", count=club_work)
+
+        if total_work > 0:
+            logger.info(
+                "aggressive_backfill_completed",
+                total_work_items=total_work,
+                rescued=rescued,
+                refinement=queued,
+                overdrive=overdrive_queued,
+                preemptive=preemptive,
+                club=club_work,
+            )
+
+        return total_work
+
+    async def _queue_preemptive_profiles(self) -> int:
+        """Generate profiles for callsigns that have activity but no profile yet."""
+        async with get_session() as session:
+            # Find callsigns with 3+ segments but no profile or stale profile
+            stmt = (
+                select(Callsign.id, func.count(CallsignLog.id).label("segment_count"))
+                .join(CallsignLog, CallsignLog.callsign_id == Callsign.id)
+                .outerjoin(CallsignProfile, CallsignProfile.callsign_id == Callsign.id)
+                .where(
+                    CallsignProfile.id.is_(None)
+                    | (CallsignProfile.last_analyzed_at < datetime.now(timezone.utc) - timedelta(hours=48))
+                )
+                .group_by(Callsign.id)
+                .having(func.count(CallsignLog.id) >= 3)
+                .limit(5)
+            )
+            result = await session.execute(stmt)
+            callsign_ids = [row[0] for row in result.all()]
+
+        if not callsign_ids:
+            return 0
+
+        # The profile refresh system will pick these up
+        logger.debug("preemptive_profiles_identified", count=len(callsign_ids))
+        return len(callsign_ids)
+
+    async def _queue_club_deep_analysis(self) -> int:
+        """Queue deep club analysis for clubs with recent activity."""
+        async with get_session() as session:
+            # Find clubs with nets in last 7 days that haven't been deeply analyzed recently
+            window = datetime.now(timezone.utc) - timedelta(days=7)
+            stmt = (
+                select(ClubProfile.id)
+                .join(NetSession, NetSession.club_name == ClubProfile.name)
+                .where(
+                    NetSession.start_time >= window,
+                    (ClubProfile.last_analyzed_at.is_(None))
+                    | (ClubProfile.last_analyzed_at < datetime.now(timezone.utc) - timedelta(hours=24))
+                )
+                .group_by(ClubProfile.id)
+                .limit(3)
+            )
+            result = await session.execute(stmt)
+            club_ids = [row[0] for row in result.all()]
+
+        if not club_ids:
+            return 0
+
+        # Mark clubs for deep analysis
+        async with get_session() as session:
+            for club_id in club_ids:
+                club = await session.get(ClubProfile, club_id)
+                if club:
+                    metadata = dict(club.metadata_ or {})
+                    metadata["pending_deep_analysis"] = True
+                    metadata["deep_analysis_requested_at"] = datetime.now(timezone.utc).isoformat()
+                    club.metadata_ = metadata
+            await session.flush()
+
+        logger.debug("club_deep_analysis_queued", count=len(club_ids))
+        return len(club_ids)
+
+    async def _record_idle_period(self, duration_ms: int) -> None:
+        """Record idle time to database for monitoring."""
+        async with get_session() as session:
+            metric = ProcessingMetric(
+                stage="analysis_idle",
+                processing_time_ms=duration_ms,
+                success=True,
+                error_message=None,
+                timestamp=datetime.now(timezone.utc),
+                metadata_={
+                    "idle_streak": self._idle_streak_count,
+                    "total_idle_ms": self._total_idle_ms,
+                    "gpu_utilization": await self._sample_gpu_utilization(),
+                },
+            )
+            session.add(metric)
+            await session.flush()
+
+    async def _track_idle_time(self) -> None:
+        """Track when analysis enters and exits idle state."""
+        if self._idle_start_time is None:
+            # Entering idle
+            self._idle_start_time = time.monotonic()
+            self._idle_streak_count += 1
+        else:
+            # Already idle, update cumulative
+            now = time.monotonic()
+            idle_duration_ms = int((now - self._idle_start_time) * 1000)
+            self._total_idle_ms += idle_duration_ms
+
+            # Log to database every 5 seconds of idle time
+            if idle_duration_ms >= 5000:
+                await self._record_idle_period(idle_duration_ms)
+                self._idle_start_time = now
+
+    def _reset_idle_tracking(self) -> None:
+        """Reset idle tracking when work is found."""
+        if self._idle_start_time is not None:
+            # Exiting idle
+            now = time.monotonic()
+            idle_duration_ms = int((now - self._idle_start_time) * 1000)
+            self._total_idle_ms += idle_duration_ms
+            self._idle_start_time = None
 
     def _build_context_block(
         self,
@@ -1631,6 +1820,17 @@ If you need more context to finish a net, include a top-level
                 )
                 session.add(net_session)
                 await session.flush()
+                
+                # Log net creation to database
+                await self._log_net_detection(
+                    net_session_id=net_session.id,
+                    net_name=net.get("name", "Unnamed Net"),
+                    confidence=confidence,
+                    participant_count=len(participant_entries),
+                    duration_sec=duration_sec,
+                    audio_file_ids=[ctx.audio_id for ctx in sources_ctx],
+                    pass_type=sources_ctx[0].pass_type if sources_ctx else "unknown",
+                )
 
                 ncs_callsign = net.get("ncs")
                 if ncs_callsign:
@@ -2051,6 +2251,50 @@ If you need more context to finish a net, include a top-level
             session.add(entry)
             await session.flush()
 
+    async def _log_net_detection(
+        self,
+        *,
+        net_session_id: uuid.UUID,
+        net_name: str,
+        confidence: float,
+        participant_count: int,
+        duration_sec: int,
+        audio_file_ids: list[uuid.UUID],
+        pass_type: str,
+    ) -> None:
+        """Log net detection event to processing_metrics for monitoring."""
+        async with get_session() as session:
+            metric = ProcessingMetric(
+                stage="net_detected",
+                processing_time_ms=0,  # Not applicable for detection events
+                success=True,
+                timestamp=datetime.now(timezone.utc),
+                metadata_={
+                    "net_session_id": str(net_session_id),
+                    "net_name": net_name,
+                    "confidence": confidence,
+                    "participant_count": participant_count,
+                    "duration_sec": duration_sec,
+                    "audio_file_count": len(audio_file_ids),
+                    "audio_file_ids": [str(aid) for aid in audio_file_ids],
+                    "pass_type": pass_type,
+                    "detection_source": "vllm_analysis",
+                },
+            )
+            session.add(metric)
+            await session.flush()
+        
+        logger.info(
+            "net_detected_and_logged",
+            net_session_id=str(net_session_id),
+            net_name=net_name,
+            confidence=confidence,
+            participants=participant_count,
+            duration_sec=duration_sec,
+            audio_files=len(audio_file_ids),
+            pass_type=pass_type,
+        )
+
     @staticmethod
     def _extract_usage_value(usage: dict[str, Any] | None, keys: Sequence[str]) -> int | None:
         if not usage:
@@ -2217,25 +2461,48 @@ If you need more context to finish a net, include a top-level
     async def process_one(self) -> bool:
         if await self._should_pause_for_transcription():
             await asyncio.sleep(self.analysis_settings.idle_poll_interval_sec)
+            await self._track_idle_time()
             return False
 
         contexts = await self._reserve_batch()
         if not contexts:
-            retried = await self._retry_failed_analysis()
-            if retried:
-                logger.info("analysis_requeued_failed", count=retried)
-                return True
-            refinement = await self._queue_refinement_work()
-            if refinement:
-                contexts = await self._reserve_batch()
-            if not contexts:
-                gpu_job = await self._maybe_queue_gpu_backfill()
-                if gpu_job == "profile_refresh":
+            # Entering idle mode - track it
+            await self._track_idle_time()
+
+            # Aggressive backfill mode: chain multiple work types
+            if self.analysis_settings.aggressive_backfill_enabled:
+                work_completed = await self._aggressive_backfill_work()
+                if work_completed > 0:
+                    # Work was queued, try to grab it immediately
+                    contexts = await self._reserve_batch()
+                    if contexts:
+                        self._reset_idle_tracking()
+                    else:
+                        # Work queued but not yet available, that's OK
+                        return True
+                else:
+                    # No work available anywhere - true idle
+                    return False
+            else:
+                # Legacy single-task idle mode
+                retried = await self._retry_failed_analysis()
+                if retried:
+                    logger.info("analysis_requeued_failed", count=retried)
                     return True
-                if gpu_job in {"audio_requeued", "overdrive_requeue"}:
+                refinement = await self._queue_refinement_work()
+                if refinement:
                     contexts = await self._reserve_batch()
                 if not contexts:
-                    return False
+                    gpu_job = await self._maybe_queue_gpu_backfill()
+                    if gpu_job == "profile_refresh":
+                        return True
+                    if gpu_job in {"audio_requeued", "overdrive_requeue"}:
+                        contexts = await self._reserve_batch()
+                    if not contexts:
+                        return False
+        else:
+            # Found work immediately - reset idle tracking
+            self._reset_idle_tracking()
 
         if contexts and self.analysis_settings.transcript_smoothing_enabled:
             await self._smooth_context_transcripts(contexts)
@@ -2305,7 +2572,16 @@ If you need more context to finish a net, include a top-level
 
         batch_pass_type = included[0].pass_type if included else "primary"
         payload = payload or {}
+        
+        # Count nets before validation
+        nets_proposed = len(payload.get("nets") or [])
+        
         payload["nets"] = await self._validate_detected_nets(included, payload.get("nets"))
+        
+        # Count nets after validation
+        nets_validated = len(payload.get("nets") or [])
+        nets_rejected = nets_proposed - nets_validated
+        
         await self._persist_analysis(included, payload)
         await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.COMPLETE)
         await self._finalize_audio_metadata(included)
@@ -2315,7 +2591,14 @@ If you need more context to finish a net, include a top-level
             pass_type=batch_pass_type,
             latency_ms=vllm_latency_ms,
             response_tokens=response_tokens,
-            observations={"context_extensions": extension_attempts},
+            observations={
+                "context_extensions": extension_attempts,
+                "nets_proposed": nets_proposed,
+                "nets_validated": nets_validated,
+                "nets_rejected": nets_rejected,
+                "callsigns_extracted": len(payload.get("callsigns") or []),
+                "clubs_identified": len(payload.get("clubs") or []),
+            },
         )
 
         cross_payload = await self._maybe_crosscheck_with_openai(
@@ -2324,33 +2607,135 @@ If you need more context to finish a net, include a top-level
             original_payload=payload,
         )
         if cross_payload:
+            cross_nets = len(cross_payload.get("nets") or [])
+            cross_callsigns = len(cross_payload.get("callsigns") or [])
             await self._persist_analysis(included, cross_payload)
             logger.info(
                 "analysis_crosscheck_applied",
-                nets=len(cross_payload.get("nets") or []),
-                callsigns=len(cross_payload.get("callsigns") or []),
+                nets=cross_nets,
+                callsigns=cross_callsigns,
             )
 
         logger.info(
             "analysis_batch_completed",
             batch_size=len(included),
             pass_type=batch_pass_type,
+            nets_detected=nets_validated,
+            nets_proposed=nets_proposed,
+            nets_rejected=nets_rejected,
+            callsigns=len(payload.get("callsigns") or []),
+            clubs=len(payload.get("clubs") or []),
             sources=[ctx.audio_filename for ctx in included],
+            latency_ms=vllm_latency_ms,
+            gpu_utilization=await self._sample_gpu_utilization(),
         )
         return True
 
     async def run_worker(self, worker_id: int = 0) -> None:
         logger.info("analysis_worker_started", worker_id=worker_id)
+        
+        # Worker statistics
+        iterations = 0
+        work_cycles = 0
+        idle_cycles = 0
+        start_time = time.monotonic()
+        last_stats_log = start_time
+        
         try:
             while True:
+                iterations += 1
                 processed = await self.process_one()
-                if not processed:
+                
+                if processed:
+                    work_cycles += 1
+                else:
+                    idle_cycles += 1
                     await asyncio.sleep(self.analysis_settings.idle_poll_interval_sec)
+                
+                # Log worker statistics every 5 minutes
+                now = time.monotonic()
+                if now - last_stats_log >= 300:
+                    elapsed_sec = now - start_time
+                    work_pct = (work_cycles / iterations * 100) if iterations > 0 else 0
+                    idle_pct = (idle_cycles / iterations * 100) if iterations > 0 else 0
+                    
+                    logger.info(
+                        "analysis_worker_statistics",
+                        worker_id=worker_id,
+                        iterations=iterations,
+                        work_cycles=work_cycles,
+                        idle_cycles=idle_cycles,
+                        work_percent=round(work_pct, 2),
+                        idle_percent=round(idle_pct, 2),
+                        elapsed_seconds=int(elapsed_sec),
+                        total_idle_ms=self._total_idle_ms,
+                        idle_streaks=self._idle_streak_count,
+                        gpu_utilization=await self._sample_gpu_utilization(),
+                    )
+                    
+                    # Persist to database
+                    await self._record_worker_statistics(
+                        worker_id=worker_id,
+                        iterations=iterations,
+                        work_cycles=work_cycles,
+                        idle_cycles=idle_cycles,
+                        elapsed_sec=int(elapsed_sec),
+                    )
+                    
+                    last_stats_log = now
+                    
         except asyncio.CancelledError:
             logger.info("analysis_worker_cancelled", worker_id=worker_id)
         finally:
+            # Final statistics
+            elapsed_sec = time.monotonic() - start_time
+            work_pct = (work_cycles / iterations * 100) if iterations > 0 else 0
+            idle_pct = (idle_cycles / iterations * 100) if iterations > 0 else 0
+            
+            logger.info(
+                "analysis_worker_stopped",
+                worker_id=worker_id,
+                final_iterations=iterations,
+                final_work_cycles=work_cycles,
+                final_idle_cycles=idle_cycles,
+                final_work_percent=round(work_pct, 2),
+                final_idle_percent=round(idle_pct, 2),
+                total_elapsed_seconds=int(elapsed_sec),
+                total_idle_ms=self._total_idle_ms,
+            )
+            
             await self.close()
-            logger.info("analysis_worker_stopped", worker_id=worker_id)
+
+    async def _record_worker_statistics(
+        self,
+        worker_id: int,
+        iterations: int,
+        work_cycles: int,
+        idle_cycles: int,
+        elapsed_sec: int,
+    ) -> None:
+        """Persist worker statistics to database for long-term analysis."""
+        async with get_session() as session:
+            metric = ProcessingMetric(
+                stage=f"analysis_worker_{worker_id}",
+                processing_time_ms=elapsed_sec * 1000,
+                success=True,
+                timestamp=datetime.now(timezone.utc),
+                metadata_={
+                    "worker_id": worker_id,
+                    "iterations": iterations,
+                    "work_cycles": work_cycles,
+                    "idle_cycles": idle_cycles,
+                    "work_percent": round((work_cycles / iterations * 100) if iterations > 0 else 0, 2),
+                    "idle_percent": round((idle_cycles / iterations * 100) if iterations > 0 else 0, 2),
+                    "total_idle_ms": self._total_idle_ms,
+                    "idle_streaks": self._idle_streak_count,
+                    "gpu_utilization": await self._sample_gpu_utilization(),
+                    "aggressive_backfill": self.analysis_settings.aggressive_backfill_enabled,
+                },
+            )
+            session.add(metric)
+            await session.flush()
 
 
 async def main() -> None:

@@ -489,7 +489,7 @@ async def get_club_profiles(
 
 async def get_system_health(session: AsyncSession) -> list[dict]:
     result = await session.execute(select(SystemHealth))
-    return [
+    health_rows = [
         {
             "component": row.component,
             "status": row.status,
@@ -501,6 +501,136 @@ async def get_system_health(session: AsyncSession) -> list[dict]:
         }
         for row in result.scalars().all()
     ]
+    
+    # Add GPU utilization statistics
+    gpu_stats = await get_gpu_statistics(session)
+    if gpu_stats:
+        health_rows.append({
+            "component": "vllm_gpu",
+            "status": gpu_stats["status"],
+            "last_heartbeat": gpu_stats["last_sample_at"],
+            "cpu_percent": None,
+            "memory_mb": None,
+            "disk_free_gb": None,
+            "metrics": gpu_stats,
+        })
+    
+    # Add analysis worker idle statistics
+    idle_stats = await get_idle_statistics(session)
+    if idle_stats:
+        health_rows.append({
+            "component": "analysis_workers",
+            "status": idle_stats["status"],
+            "last_heartbeat": idle_stats["last_update_at"],
+            "cpu_percent": None,
+            "memory_mb": None,
+            "disk_free_gb": None,
+            "metrics": idle_stats,
+        })
+    
+    return health_rows
+
+
+async def get_gpu_statistics(session: AsyncSession) -> dict[str, Any] | None:
+    """Get recent GPU utilization statistics."""
+    from tsn_common.models.support import GpuUtilizationSample
+    
+    # Get samples from last hour
+    window = datetime.now(timezone.utc) - timedelta(hours=1)
+    result = await session.execute(
+        select(
+            func.avg(GpuUtilizationSample.utilization_pct).label("avg_util"),
+            func.min(GpuUtilizationSample.utilization_pct).label("min_util"),
+            func.max(GpuUtilizationSample.utilization_pct).label("max_util"),
+            func.count(GpuUtilizationSample.id).label("sample_count"),
+            func.max(GpuUtilizationSample.created_at).label("last_sample"),
+        )
+        .where(GpuUtilizationSample.created_at >= window)
+    )
+    row = result.first()
+    
+    if not row or row.sample_count == 0:
+        return None
+    
+    avg_util = float(row.avg_util or 0)
+    status = "healthy" if avg_util >= 75.0 else "degraded" if avg_util >= 50.0 else "down"
+    
+    return {
+        "status": status,
+        "avg_utilization_pct": round(avg_util, 2),
+        "min_utilization_pct": round(float(row.min_util or 0), 2),
+        "max_utilization_pct": round(float(row.max_util or 0), 2),
+        "sample_count": int(row.sample_count),
+        "last_sample_at": row.last_sample.isoformat() if row.last_sample else None,
+        "window_hours": 1,
+    }
+
+
+async def get_idle_statistics(session: AsyncSession) -> dict[str, Any] | None:
+    """Get analysis worker idle time statistics."""
+    # Get idle metrics from last hour
+    window = datetime.now(timezone.utc) - timedelta(hours=1)
+    result = await session.execute(
+        select(
+            func.sum(ProcessingMetric.processing_time_ms).label("total_idle_ms"),
+            func.count(ProcessingMetric.id).label("idle_event_count"),
+            func.max(ProcessingMetric.timestamp).label("last_update"),
+        )
+        .where(
+            ProcessingMetric.stage == "analysis_idle",
+            ProcessingMetric.timestamp >= window,
+        )
+    )
+    row = result.first()
+    
+    # Get worker statistics
+    worker_result = await session.execute(
+        select(ProcessingMetric.metadata_)
+        .where(
+            ProcessingMetric.stage.like("analysis_worker_%"),
+            ProcessingMetric.timestamp >= window,
+        )
+        .order_by(ProcessingMetric.timestamp.desc())
+        .limit(10)
+    )
+    worker_rows = worker_result.scalars().all()
+    
+    if not row or row.total_idle_ms is None:
+        return None
+    
+    total_idle_ms = int(row.total_idle_ms or 0)
+    idle_pct = 0.0
+    work_pct = 0.0
+    
+    # Calculate aggregate work/idle percentages from worker metadata
+    if worker_rows:
+        work_pcts = []
+        idle_pcts = []
+        for metadata in worker_rows:
+            if metadata:
+                if "work_percent" in metadata:
+                    work_pcts.append(float(metadata["work_percent"]))
+                if "idle_percent" in metadata:
+                    idle_pcts.append(float(metadata["idle_percent"]))
+        
+        if work_pcts:
+            work_pct = sum(work_pcts) / len(work_pcts)
+        if idle_pcts:
+            idle_pct = sum(idle_pcts) / len(idle_pcts)
+    
+    # Status based on idle percentage
+    status = "healthy" if idle_pct <= 10.0 else "degraded" if idle_pct <= 30.0 else "down"
+    
+    return {
+        "status": status,
+        "total_idle_ms": total_idle_ms,
+        "total_idle_seconds": round(total_idle_ms / 1000.0, 2),
+        "idle_event_count": int(row.idle_event_count or 0),
+        "last_update_at": row.last_update.isoformat() if row.last_update else None,
+        "avg_work_percent": round(work_pct, 2),
+        "avg_idle_percent": round(idle_pct, 2),
+        "window_hours": 1,
+    }
 
 
 async def get_global_stats(session: AsyncSession, node_scope: str = "all") -> dict[str, int]:
