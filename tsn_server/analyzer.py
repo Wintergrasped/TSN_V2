@@ -604,7 +604,7 @@ Respond ONLY with JSON in this schema:
      "callsigns": ["..."],
      "notes": "brief commentary",
      "window_hours": 4
-    },
+    }},
     "merge_suggestions": [
         {
             "type": "club|callsign",
@@ -960,9 +960,6 @@ If you need more context to finish a net, include a top-level
             return float(value)
         except (TypeError, ValueError):
             return None
-        session.add(record)
-        await session.flush()
-        return record
 
     async def _get_or_create_profile(self, session, callsign_id: uuid.UUID) -> CallsignProfile:
         result = await session.execute(
