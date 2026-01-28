@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tsn_common.logging import get_logger
@@ -21,6 +21,7 @@ from tsn_common.models.support import ProcessingMetric, SystemHealth
 from tsn_common.models.transcription import Transcription
 from tsn_common.models.trend import TrendSnapshot
 from web.services.ai import merge_entities, summarize_dashboard_sections
+from web.services.validation import schedule_qrz_backfill
 
 
 logger = get_logger(__name__)
@@ -159,13 +160,11 @@ async def get_audio_queue_snapshot(session: AsyncSession) -> dict:
 
 
 async def get_recent_callsigns(session: AsyncSession, limit: int = 25) -> list[dict]:
+    priority = case((Callsign.validation_method == ValidationMethod.QRZ, 0), else_=1)
     stmt = (
         select(Callsign)
-        .where(
-            Callsign.validated.is_(True),
-            Callsign.validation_method == ValidationMethod.QRZ,
-        )
-        .order_by(Callsign.last_seen.desc())
+        .where(Callsign.validated.is_(True))
+        .order_by(priority, Callsign.last_seen.desc())
         .limit(limit)
     )
     result = await session.execute(stmt)
@@ -398,6 +397,8 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
             "detail": "Organized sessions",
         },
     ]
+
+    schedule_qrz_backfill()
 
     return {
         "queue": queue,

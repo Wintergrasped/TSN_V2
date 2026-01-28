@@ -250,6 +250,46 @@ tr:last-child td {
     margin-bottom: 2rem;
 }
 
+.user-hero {
+    display: flex;
+    justify-content: space-between;
+    gap: 2rem;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.user-photo {
+    width: 180px;
+    height: 180px;
+    border-radius: 1.5rem;
+    overflow: hidden;
+    background: var(--panel-alt);
+    box-shadow: 0 25px 40px rgba(5, 6, 10, 0.35);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.user-photo img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.photo-placeholder {
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.75rem;
+}
+
+.hero-summary {
+    font-size: 1rem;
+    line-height: 1.5;
+    margin-top: 0.5rem;
+}
+
 .profile-grid article pre {
     max-height: 220px;
     overflow: auto;
@@ -350,7 +390,8 @@ tr:last-child td {
 }
 
 .form-card input,
-.form-card button {
+.form-card button,
+.form-card textarea {
     padding: 0.65rem 0.9rem;
     border-radius: 0.6rem;
     border: none;
@@ -361,11 +402,47 @@ tr:last-child td {
     color: var(--text);
 }
 
+.form-card textarea {
+    background: var(--panel-alt);
+    color: var(--text);
+    font-family: var(--font-body);
+    resize: vertical;
+}
+
 .form-card button {
     background: linear-gradient(120deg, var(--accent), var(--accent-soft));
     color: #1b1c1f;
     font-weight: 700;
     cursor: pointer;
+}
+
+.timeline {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.timeline li {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    background: var(--panel-alt);
+    border-radius: 1rem;
+    padding: 0.75rem 1rem;
+}
+
+.timeline-time {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin: 0 0 0.4rem;
+}
+
+.timeline-context {
+    margin: 0;
+    font-size: 0.95rem;
 }
 
 .form-hint {
@@ -397,5 +474,15 @@ tr:last-child td {
 
     .site-header nav {
         width: 100%;
+    }
+
+    .user-hero {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .user-photo {
+        width: 140px;
+        height: 140px;
     }
 }

@@ -1,10 +1,167 @@
 {% extends "base.html" %}
 {% block title %}My Dashboard{% endblock %}
 {% block content %}
-<section class="form-card">
-    <h2>Welcome {{ current_user.display_name }}</h2>
-    <p class="muted">Callsign: {{ callsign_link(current_user.callsign) if current_user.callsign else 'Not linked' }}</p>
-    <p>This space is ready for personalized filters, saved searches, and alerts.
-       Wire up new widgets by extending `user_dashboard.html`.</p>
+<section class="user-hero card">
+    <div>
+        <p class="muted">Signed in as {{ payload.profile.email }}</p>
+        <h2>Hey {{ payload.profile.display_name }}, here is your RF footprint</h2>
+        {% if payload.profile.callsign %}
+            <p class="muted">
+                Callsign: {{ callsign_link(payload.profile.callsign, 'chip') }}
+                {% if payload.stats.validated %}
+                    <span class="chip alt">Validated {{ payload.stats.validation_method|upper }}</span>
+                {% else %}
+                    <span class="chip warning">Awaiting validation</span>
+                {% endif %}
+            </p>
+        {% else %}
+            <p class="muted error">Link a callsign in your account profile to unlock stats.</p>
+        {% endif %}
+        {% if payload.callsign_profile.summary %}
+            <p class="hero-summary">{{ payload.callsign_profile.summary }}</p>
+        {% elif payload.callsign_missing %}
+            <p class="hero-summary">We need your callsign to pull mention history.</p>
+        {% else %}
+            <p class="hero-summary">No AI summary yet—keep checking in and we will synthesize one soon.</p>
+        {% endif %}
+        {% if payload.preferences.bio %}
+            <p class="muted">Bio: {{ payload.preferences.bio }}</p>
+        {% endif %}
+    </div>
+    <div class="user-photo">
+        {% if payload.preferences.photo_url %}
+            <img src="{{ payload.preferences.photo_url }}" alt="Profile photo" />
+        {% else %}
+            <div class="photo-placeholder">Add a photo</div>
+        {% endif %}
+    </div>
+</section>
+
+<section class="stats-grid">
+    <article class="stat-card">
+        <p class="label">Mentions Logged</p>
+        <p class="value">{{ payload.stats.mentions_total }}</p>
+        <p class="detail">First heard {{ payload.stats.first_seen or '—' }}</p>
+    </article>
+    <article class="stat-card">
+        <p class="label">Nets joined</p>
+        <p class="value">{{ payload.stats.nets_total }}</p>
+        <p class="detail">Last active {{ payload.stats.last_seen or payload.stats.last_active or '—' }}</p>
+    </article>
+    <article class="stat-card">
+        <p class="label">Transmissions Logged</p>
+        <p class="value">{{ payload.stats.transmissions_total }}</p>
+        <p class="detail">Talk time {{ payload.stats.talk_seconds_total }}s</p>
+    </article>
+    <article class="stat-card">
+        <p class="label">Average Talk / Net</p>
+        <p class="value">{{ payload.stats.avg_talk_length or 0 }}s</p>
+        <p class="detail">Smoothed by analyzer</p>
+    </article>
+</section>
+
+<section class="grid">
+    <article>
+        <div class="card-header">
+            <h3>Recent Mentions</h3>
+            <span class="muted">Last {{ payload.recent_transcripts|length }} transcripts</span>
+        </div>
+        {% if payload.recent_transcripts %}
+            <ul class="timeline">
+                {% for tx in payload.recent_transcripts %}
+                <li>
+                    <div>
+                        <p class="timeline-time">{{ tx.detected_at }}</p>
+                        <p class="timeline-context">{{ tx.context or tx.transcription_preview }}</p>
+                    </div>
+                    <small class="muted">{{ tx.audio_filename }}</small>
+                </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="muted">No transcripts yet. Once your callsign appears on-air, history will populate here.</p>
+        {% endif %}
+    </article>
+    <article>
+        <div class="card-header">
+            <h3>Net Activity</h3>
+            <span class="muted">Most recent sessions</span>
+        </div>
+        {% if payload.net_activity %}
+            <ul class="net-list">
+                {% for net in payload.net_activity %}
+                <li>
+                    <div>
+                        <strong>{{ net.name }}</strong>
+                        <p class="muted">{{ net.start_time }} • {{ net.club or 'Independent' }}</p>
+                    </div>
+                    <div class="chip-row">
+                        <span class="chip">{{ net.transmissions }} tx</span>
+                        <span class="chip alt">{{ net.talk_seconds }}s</span>
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="muted">We have not seen you in a logged net yet.</p>
+        {% endif %}
+    </article>
+</section>
+
+<section class="grid">
+    <article>
+        <div class="card-header">
+            <h3>Club Memberships</h3>
+            <span class="muted">Detected + manual entries</span>
+        </div>
+        <h4>Detected on-air</h4>
+        {% if payload.memberships.detected %}
+            <ul class="pill-list">
+                {% for membership in payload.memberships.detected %}
+                <li>
+                    <span>{{ membership.club }}</span>
+                    <span class="muted">{{ membership.role }} • {{ membership.last_seen }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="muted">No detected club shout-outs yet.</p>
+        {% endif %}
+        <h4>Manual list</h4>
+        {% if payload.preferences.club_memberships %}
+            <ul class="pill-list">
+                {% for club in payload.preferences.club_memberships %}
+                    <li><span>{{ club }}</span></li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="muted">Add clubs below to highlight your affiliations.</p>
+        {% endif %}
+    </article>
+    <section class="form-card">
+        <div class="form-card__header">
+            <div>
+                <h3>Personalize</h3>
+                <p class="muted">Share a bio, avatar, and club roll-call.</p>
+            </div>
+        </div>
+        <form method="post" action="/user/dashboard">
+            <label class="form-field">
+                <span>Bio</span>
+                <textarea name="bio" rows="4" placeholder="Tell us about your station">{{ payload.preferences.bio }}</textarea>
+            </label>
+            <label class="form-field">
+                <span>Photo URL</span>
+                <input type="url" name="photo_url" value="{{ payload.preferences.photo_url or '' }}" placeholder="https://example.com/avatar.jpg" />
+                <small>Square images look best.</small>
+            </label>
+            <label class="form-field">
+                <span>Clubs</span>
+                <textarea name="club_memberships" rows="4" placeholder="PNW SEC, Valley ARC">{{ payload.preferences.club_memberships_text }}</textarea>
+                <small>Comma or newline separated list.</small>
+            </label>
+            <button type="submit">Save Profile</button>
+        </form>
+    </section>
 </section>
 {% endblock %}

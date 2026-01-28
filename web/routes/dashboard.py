@@ -1,7 +1,7 @@
 """Server-rendered pages for the KK7NQN-inspired dashboard."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from web.dependencies import get_current_user, get_db_session, maybe_current_user, templates
 from web.services.dashboard import (
@@ -14,6 +14,7 @@ from web.services.dashboard import (
     get_trend_highlights,
 )
 from web.services import nets
+from web.services import user_dashboard as user_dash_service
 
 router = APIRouter()
 
@@ -145,12 +146,33 @@ async def health_page(
 @router.get("/user/dashboard", response_class=HTMLResponse)
 async def user_dashboard(
     request: Request,
+    session=Depends(get_db_session),
     current_user=Depends(get_current_user),
 ):
+    payload = await user_dash_service.build_user_dashboard_payload(session, current_user)
     return templates.TemplateResponse(
         "user_dashboard.html",
         {
             "request": request,
             "current_user": current_user,
+            "payload": payload,
         },
     )
+
+
+@router.post("/user/dashboard")
+async def update_user_dashboard(
+    bio: str = Form(""),
+    photo_url: str = Form(""),
+    club_memberships: str = Form(""),
+    session=Depends(get_db_session),
+    current_user=Depends(get_current_user),
+):
+    await user_dash_service.update_profile_preferences(
+        session,
+        current_user,
+        bio=bio,
+        photo_url=photo_url,
+        club_memberships=club_memberships,
+    )
+    return RedirectResponse("/user/dashboard", status_code=status.HTTP_303_SEE_OTHER)
