@@ -93,3 +93,47 @@ class AnalysisAudit(Base):
 
     def __repr__(self) -> str:
         return f"<AnalysisAudit(audio_file_id={self.audio_file_id}, pass={self.pass_type})>"
+
+
+class AiRunLog(Base):
+    """Detailed record of every AI request/response cycle."""
+
+    __tablename__ = "ai_run_logs"
+
+    backend: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    pass_label: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
+    response_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_characters: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    response_characters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gpu_utilization_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    audio_file_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("ix_ai_run_logs_pass_label", "pass_label", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<AiRunLog(pass_label={self.pass_label}, backend={self.backend})>"
+
+
+class GpuUtilizationSample(Base):
+    """Periodic GPU utilization samples for capacity planning."""
+
+    __tablename__ = "gpu_utilization_samples"
+
+    utilization_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    sample_source: Mapped[str] = mapped_column(String(32), nullable=False, default="nvidia-smi")
+    is_saturated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<GpuUtilizationSample(source={self.sample_source}, utilization={self.utilization_pct})>"

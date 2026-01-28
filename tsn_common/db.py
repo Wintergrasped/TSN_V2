@@ -91,9 +91,11 @@ async def _run_bootstrap_migrations() -> None:
     """Run idempotent migrations that keep legacy installs current."""
 
     from tsn_common.migrations.legacy_uuid_migrator import LegacyUUIDMigrator
+    from tsn_common.migrations.metrics_expansion import MetricsExpansionMigrator
 
-    migrator = LegacyUUIDMigrator()
-    await migrator.run()
+    migrators = [LegacyUUIDMigrator(), MetricsExpansionMigrator()]
+    for migrator in migrators:
+        await migrator.run()
 
 
 async def _ensure_schema_ready() -> None:

@@ -4,7 +4,7 @@ import enum
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tsn_common.models.base import Base, GUID
@@ -41,6 +41,9 @@ class Transcription(Base):
     # Transcription content
     transcript_text: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
+    smoothed_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    smoothed_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    smoothed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Processing metadata
     backend: Mapped[TranscriptionBackend] = mapped_column(
@@ -85,4 +88,7 @@ class Transcription(Base):
             "processing_time_ms": self.processing_time_ms,
             "word_count": self.word_count,
             "char_count": self.char_count,
+            "smoothed_text": self.smoothed_text,
+            "smoothed_metadata": self.smoothed_metadata,
+            "smoothed_at": self.smoothed_at.isoformat() if self.smoothed_at else None,
         }

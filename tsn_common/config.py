@@ -229,6 +229,30 @@ class AnalysisSettings(BaseSettings):
         default=5,
         description="Minimum segment count before a callsign is considered for profile refresh",
     )
+    transcript_smoothing_enabled: bool = Field(
+        default=True,
+        description="Use vLLM to produce cleaned transcript variants",
+    )
+    transcript_smoothing_batch_size: int = Field(
+        default=4,
+        description="How many transcripts to smooth per AI call",
+    )
+    failed_analysis_rescue_minutes: int = Field(
+        default=10,
+        description="Minutes to wait before automatically re-queuing failed analyses",
+    )
+    failed_analysis_rescue_batch: int = Field(
+        default=25,
+        description="How many failed analyses to rescue per sweep",
+    )
+    failed_analysis_retry_limit: int = Field(
+        default=6,
+        description="Maximum failed attempts before leaving a file in failed_analysis",
+    )
+    gpu_saturation_threshold_pct: float = Field(
+        default=95.0,
+        description="Utilization percent considered \"full GPU\" for metrics",
+    )
 
     model_config = SettingsConfigDict(env_prefix="TSN_ANALYSIS_")
 
