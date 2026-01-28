@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, update
 from starlette.middleware.sessions import SessionMiddleware
 
-from tsn_common.db import get_engine, async_session_maker
+from tsn_common.db import get_engine, get_session_factory
 from tsn_common.logging import get_logger
 from tsn_common.models.audio import AudioFile
 from tsn_common.models.base import Base
@@ -28,14 +28,16 @@ NODE_FILENAME_PATTERN = re.compile(r'^(\d+)_\d+\.wav$', re.IGNORECASE)
 async def repair_node_ids_periodic() -> None:
     """
     Background task that periodically checks audio_files table for missing node_ids.
-    Extracts node_id from filename pattern: node_X_timestamp.wav
+    Extracts node_id from filename pattern: NODEID_timestamp.wav (e.g., 66296_2026012520595573.WAV)
     Runs every 5 minutes.
     """
+    session_factory = get_session_factory()
+    
     while True:
         try:
             await asyncio.sleep(300)  # Wait 5 minutes between checks
             
-            async with async_session_maker() as session:
+            async with session_factory() as session:
                 # Find audio files with NULL or 'unknown' node_id
                 stmt = select(AudioFile).where(
                     (AudioFile.node_id.is_(None)) | (AudioFile.node_id == "unknown")
