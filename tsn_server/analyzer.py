@@ -327,7 +327,7 @@ class TranscriptAnalyzer:
                 utilization_pct=value,
                 sample_source="nvidia-smi",
                 is_saturated=value >= self.analysis_settings.gpu_saturation_threshold_pct,
-                notes=f\"idle_streak={self._idle_streak_count}, total_idle_ms={self._total_idle_ms}\",
+                notes=f"idle_streak={self._idle_streak_count}, total_idle_ms={self._total_idle_ms}",
             )
             session.add(sample)
             await session.flush()
