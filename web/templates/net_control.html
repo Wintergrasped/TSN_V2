@@ -74,15 +74,17 @@
                 <label for="net-name">Net name</label>
                 <input id="net-name" name="name" placeholder="Thursday Traffic Net" required />
                 
-                {% if available_nodes and available_nodes|length > 0 %}
                 <label for="net-node">Node (optional)</label>
                 <select id="net-node" name="node_id">
                     <option value="">All Nodes</option>
-                    {% for node in available_nodes %}
-                        <option value="{{ node }}" {% if selected_node == node %}selected{% endif %}>{{ node }}</option>
-                    {% endfor %}
+                    {% if available_nodes and available_nodes|length > 0 %}
+                        {% for node in available_nodes %}
+                            <option value="{{ node }}" {% if selected_node == node %}selected{% endif %}>{{ node }}</option>
+                        {% endfor %}
+                    {% else %}
+                        <option value="" disabled>No nodes detected yet</option>
+                    {% endif %}
                 </select>
-                {% endif %}
                 
                 <label for="net-notes">Notes</label>
                 <textarea id="net-notes" name="notes" rows="3" placeholder="Any context or repeaters"></textarea>
