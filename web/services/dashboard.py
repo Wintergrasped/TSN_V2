@@ -157,10 +157,14 @@ def _flatten_ai_value(value: Any) -> str:
     return str(value)
 
 
-def _humanize_ai_summary(text: str | None) -> str:
+def _humanize_ai_summary(value: Any) -> str:
     default = "AI summary unavailable."
-    if not text:
+    if value is None:
         return default
+    if isinstance(value, (dict, list)):
+        flattened = _flatten_ai_value(value)
+        return flattened or default
+    text = str(value)
     snippet = text.strip()
     if not snippet:
         return default

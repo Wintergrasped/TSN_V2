@@ -47,6 +47,12 @@ async def callsign_page(
     current_user=Depends(maybe_current_user),
 ):
     node_scope = normalize_node_scope(node)
+    initial_callsigns = await get_recent_callsigns(
+        session,
+        limit=100,
+        node_scope=node_scope,
+        order_by="mentions",
+    )
     query = {
         "limit": 400,
         "order": "mentions",
@@ -63,6 +69,7 @@ async def callsign_page(
             "current_user": current_user,
             "callsign_feed_url": feed_url,
             "node_scope": node_scope,
+            "initial_callsigns": initial_callsigns,
         },
     )
 

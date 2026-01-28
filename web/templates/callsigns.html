@@ -27,9 +27,22 @@
                 </tr>
             </thead>
             <tbody data-async-table data-row-type="callsign" data-endpoint="{{ callsign_feed_url }}" data-columns="5" data-empty="#callsign-empty">
-                <tr data-loading-row>
-                    <td colspan="5" class="muted">Loading callsigns…</td>
-                </tr>
+                {% if initial_callsigns %}
+                    {% for cs in initial_callsigns %}
+                    {% set method = (cs.validation_method | upper) if cs.validation_method else 'UNVERIFIED' %}
+                    <tr data-search-text="{{ cs.callsign }} {{ method }} {{ cs.seen_count }}">
+                        <td>{{ callsign_link(cs.callsign) }}</td>
+                        <td>{{ cs.first_seen or '—' }}</td>
+                        <td>{{ cs.last_seen or '—' }}</td>
+                        <td>{{ cs.seen_count or 0 }}</td>
+                        <td>{{ method }}</td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr data-loading-row>
+                        <td colspan="5" class="muted">Loading callsigns…</td>
+                    </tr>
+                {% endif %}
             </tbody>
         </table>
     </div>
