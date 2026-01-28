@@ -17,7 +17,7 @@ from tsn_common.models.audio import AudioFile
 from tsn_common.models.callsign import Callsign, ValidationMethod
 from tsn_common.models.club import ClubProfile
 from tsn_common.models.net import NetSession
-from tsn_common.models.support import AnalysisAudit, SystemHealth
+from tsn_common.models.support import ProcessingMetric, SystemHealth
 from tsn_common.models.transcription import Transcription
 from tsn_common.models.trend import TrendSnapshot
 from web.services.ai import merge_entities, summarize_dashboard_sections
@@ -287,6 +287,8 @@ async def get_global_stats(session: AsyncSession) -> dict[str, int]:
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(days=7)
 
+    ai_stages = ("ai_pass_vllm", "ai_pass_openai")
+
     total_callsigns = await session.scalar(select(func.count(Callsign.id))) or 0
     validated_callsigns = await session.scalar(
         select(func.count(Callsign.id)).where(Callsign.validated.is_(True))
@@ -302,9 +304,14 @@ async def get_global_stats(session: AsyncSession) -> dict[str, int]:
     transcript_total = await session.scalar(select(func.count(Transcription.id))) or 0
     net_total = await session.scalar(select(func.count(NetSession.id))) or 0
 
-    ai_passes_total = await session.scalar(select(func.count(AnalysisAudit.id))) or 0
+    ai_passes_total = await session.scalar(
+        select(func.count(ProcessingMetric.id)).where(ProcessingMetric.stage.in_(ai_stages))
+    ) or 0
     ai_passes_recent = await session.scalar(
-        select(func.count(AnalysisAudit.id)).where(AnalysisAudit.created_at >= recent_cutoff)
+        select(func.count(ProcessingMetric.id)).where(
+            ProcessingMetric.stage.in_(ai_stages),
+            ProcessingMetric.timestamp >= recent_cutoff,
+        )
     ) or 0
 
     return {

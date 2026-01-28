@@ -37,12 +37,20 @@ from tsn_common.models import (
     ClubRole,
     NetParticipation,
     NetSession,
+    ProcessingMetric,
     TrendSnapshot,
     Transcription,
 )
 from tsn_common.utils import normalize_callsign
 
 logger = get_logger(__name__)
+
+_MIN_NET_TRANSCRIPTS = 3
+_MIN_NET_PARTICIPANTS = 3
+_MIN_NON_NCS_PARTICIPANTS = 2
+_MIN_NET_DURATION_SEC = 180
+_MIN_NET_CONFIDENCE = 0.65
+_MIN_NET_SUMMARY_LEN = 40
 
 
 @dataclass
@@ -355,7 +363,7 @@ class TranscriptAnalyzer:
 
         return included, "".join(block_parts)
 
-    async def call_vllm(self, prompt: str) -> tuple[str, dict[str, Any]]:
+    async def call_vllm(self, prompt: str, *, pass_label: str = "analysis") -> tuple[str, dict[str, Any]]:
         """Call the vLLM server with automatic loopback fallback."""
 
         def candidate_urls() -> list[str]:
@@ -399,13 +407,22 @@ class TranscriptAnalyzer:
         errors: list[tuple[str, str]] = []
         for endpoint in candidate_urls():
             try:
+                start_time = time.perf_counter()
                 response = await self.http_client.post(endpoint, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
+                latency_ms = int((time.perf_counter() - start_time) * 1000)
                 meta = {
                     "model": data.get("model"),
                     "usage": data.get("usage"),
+                    "latency_ms": latency_ms,
                 }
+                await self._record_ai_pass_metric(
+                    backend="vllm",
+                    pass_label=pass_label,
+                    latency_ms=latency_ms,
+                    success=True,
+                )
                 return data["choices"][0]["message"]["content"], meta
             except httpx.ConnectError as exc:  # pragma: no cover - network heavy
                 errors.append((endpoint, str(exc)))
@@ -420,6 +437,13 @@ class TranscriptAnalyzer:
                 logger.error("vllm_call_failed", base_url=endpoint, error=str(exc))
                 raise
 
+        await self._record_ai_pass_metric(
+            backend="vllm",
+            pass_label=pass_label,
+            latency_ms=None,
+            success=False,
+            error="all_endpoints_failed",
+        )
         logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
         raise RuntimeError("All vLLM endpoints failed")
 
@@ -433,18 +457,19 @@ CONTEXT START
 CONTEXT END
 
 Tasks (minimum requirements):
-1. Net Identification: find organized nets, determine NCS, club ties, roster
-    (normal, late, short time/IO, relay), net type, duration, topics, stats.
-    Only emit a net if it spans >=2 transcripts (sources) AND has >=2
-    participants beyond just NCS. If you cannot satisfy those constraints with
-    the current context, request more transcripts instead of emitting a net.
-2. Callsign Topic History & Profiles: for every callsign mentioned, summarize
-   favorite topics, recent behavior, whether they were NCS, late, or open-QSO,
-   and surface transcripts where notable traffic occurred.
-3. Club/Organization Detection: identify clubs or groups, their NCS ops, net
-   schedules, and member roles.
-4. Trend Analysis: report topic/callsign trends, anomalies, and noteworthy
-   changes to keep the silicon hot even when live nets are quiet.
+1. Net Identification (Primary Pass): Decide whether the provided transcripts
+    form one cohesive net or multiple nets. Only emit a net when you have
+    >=3 transcript sources spanning >=180 seconds and >=2 non-NCS participants.
+    If you cannot meet those constraints, request more context instead of
+    emitting low-confidence fragments.
+2. Net Validation (Self-check): For each proposed net, justify why the evidence
+    proves it is a legitimate organized session. Include a confidence 0-1.
+3. Callsign Topic History & Profiles: summarize favorite topics, recent roles,
+    and notable transcript references for each callsign.
+4. Club/Organization Detection & Alias Insight: identify clubs, schedules, and
+    when two names are likely the same group (e.g., "PSRG" vs "Puget Sound").
+5. Trend Analysis: describe topic/callsign trends or anomalies even when nets
+    are quiet so GPUs stay busy.
 
 Respond ONLY with JSON in this schema:
 {{
@@ -496,7 +521,16 @@ Respond ONLY with JSON in this schema:
      "callsigns": ["..."],
      "notes": "brief commentary",
      "window_hours": 4
-  }}
+    },
+    "merge_suggestions": [
+        {
+            "type": "club|callsign",
+            "entity": "PSRG",
+            "canonical": "Puget Sound Repeater Group",
+            "confidence": 0.85,
+            "reason": "context evidence"
+        }
+    ]
 }}
 
 If you need more context to finish a net, include a top-level
@@ -653,26 +687,77 @@ If you need more context to finish a net, include a top-level
                     continue
 
                 participant_entries = [entry for entry in (net.get("participants") or []) if entry.get("callsign")]
-                if len(sources_ctx) < 2:
-                    logger.info(
-                        "analysis_skip_net_insufficient_sources",
-                        net_name=net.get("name"),
-                        sources=len(sources_ctx),
+                # Deduplicate participants by callsign (case-insensitive)
+                deduped: dict[str, dict[str, Any]] = {}
+                for entry in participant_entries:
+                    callsign = entry.get("callsign", "").upper()
+                    if not callsign:
+                        continue
+                    if callsign in deduped:
+                        continue
+                    deduped[callsign] = entry
+                participant_entries = list(deduped.values())
+
+                if len(sources_ctx) < _MIN_NET_TRANSCRIPTS:
+                    self._log_net_skip(
+                        "insufficient_transcripts",
+                        net,
+                        transcript_count=len(sources_ctx),
+                        min_required=_MIN_NET_TRANSCRIPTS,
                     )
                     continue
-                if len(participant_entries) < 2:
-                    logger.info(
-                        "analysis_skip_net_insufficient_participants",
-                        net_name=net.get("name"),
-                        participants=len(participant_entries),
+                if len(participant_entries) < _MIN_NET_PARTICIPANTS:
+                    self._log_net_skip(
+                        "insufficient_participants",
+                        net,
+                        participant_count=len(participant_entries),
+                        min_required=_MIN_NET_PARTICIPANTS,
+                    )
+                    continue
+
+                ncs_callsign = (net.get("ncs") or "").upper()
+                non_ncs = [p for p in participant_entries if p.get("callsign", "").upper() != ncs_callsign]
+                if len(non_ncs) < _MIN_NON_NCS_PARTICIPANTS:
+                    self._log_net_skip(
+                        "insufficient_non_ncs",
+                        net,
+                        non_ncs=len(non_ncs),
+                        min_required=_MIN_NON_NCS_PARTICIPANTS,
+                    )
+                    continue
+
+                confidence = float((net.get("stats") or {}).get("confidence") or 0.0)
+                if confidence < _MIN_NET_CONFIDENCE:
+                    self._log_net_skip(
+                        "low_confidence",
+                        net,
+                        confidence=confidence,
+                        threshold=_MIN_NET_CONFIDENCE,
+                    )
+                    continue
+
+                summary = (net.get("summary") or "").strip()
+                if len(summary) < _MIN_NET_SUMMARY_LEN:
+                    self._log_net_skip(
+                        "summary_too_short",
+                        net,
+                        length=len(summary),
+                        min_required=_MIN_NET_SUMMARY_LEN,
                     )
                     continue
 
                 start_time = min(ctx.audio_created_at for ctx in sources_ctx)
                 duration_sec = int(net.get("stats", {}).get("duration_minutes", 0) * 60) or self._effective_duration(sources_ctx)
+                if duration_sec < _MIN_NET_DURATION_SEC:
+                    self._log_net_skip(
+                        "duration_too_short",
+                        net,
+                        duration=duration_sec,
+                        min_required=_MIN_NET_DURATION_SEC,
+                    )
+                    continue
                 end_time = start_time + timedelta(seconds=duration_sec)
                 topics = net.get("topics") or None
-                summary = net.get("summary")
                 statistics = net.get("stats") or {}
                 source_segments = [
                     {
@@ -706,7 +791,7 @@ If you need more context to finish a net, include a top-level
                     end_time=end_time,
                     duration_sec=duration_sec,
                     participant_count=len(participant_entries),
-                    confidence=float(net.get("stats", {}).get("confidence", 0.75)),
+                    confidence=confidence,
                     summary=summary,
                     topics=topics,
                     statistics=statistics,
@@ -851,12 +936,152 @@ If you need more context to finish a net, include a top-level
             )
             session.add(snapshot)
 
+    async def _persist_merge_suggestions(self, suggestions: list[dict[str, Any]] | None) -> None:
+        if not suggestions or not self.analysis_settings.merge_suggestion_enabled:
+            return
+
+        async with get_session() as session:
+            for suggestion in suggestions:
+                suggestion_type = (suggestion.get("type") or "").lower()
+                entity = suggestion.get("entity") or suggestion.get("alias")
+                canonical = suggestion.get("canonical") or entity
+                confidence = float(suggestion.get("confidence") or 0.0)
+                reason = suggestion.get("reason") or ""
+
+                if not entity or not canonical:
+                    continue
+
+                payload = {
+                    "alias": entity,
+                    "canonical": canonical,
+                    "confidence": confidence,
+                    "reason": reason,
+                }
+
+                if suggestion_type == "club":
+                    club = await self._get_or_create_club(session, canonical)
+                    metadata = dict(club.metadata_ or {})
+                    alias_list = list(metadata.get("alias_suggestions") or [])
+                    if payload not in alias_list:
+                        alias_list.append(payload)
+                        metadata["alias_suggestions"] = alias_list
+                        club.metadata_ = metadata
+                elif suggestion_type == "callsign":
+                    callsign_record = await self._get_or_create_callsign(session, canonical)
+                    if not callsign_record:
+                        continue
+                    profile = await self._get_or_create_profile(session, callsign_record.id)
+                    metadata = dict(profile.metadata_ or {})
+                    alias_list = list(metadata.get("alias_suggestions") or [])
+                    if payload not in alias_list:
+                        alias_list.append(payload)
+                        metadata["alias_suggestions"] = alias_list
+                        profile.metadata_ = metadata
+                else:
+                    logger.debug(
+                        "merge_suggestion_skipped_unknown_type",
+                        suggestion_type=suggestion_type,
+                        alias=entity,
+                    )
+
+    async def _validate_detected_nets(
+        self,
+        contexts: list[ContextEntry],
+        nets: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        if not nets or not self.analysis_settings.net_validation_enabled:
+            return nets or []
+
+        digest_parts: list[str] = []
+        for ctx in contexts:
+            snippet = (ctx.snippet or ctx.transcript_text)[:320].replace("\n", " ")
+            digest_parts.append(
+                f"Transcript {ctx.index} at {ctx.audio_created_at.isoformat()} (duration {ctx.audio_duration_sec or 'unknown'}s): {snippet}"
+            )
+
+        nets_outline = []
+        for net in nets:
+            nets_outline.append(
+                {
+                    "name": net.get("name"),
+                    "ncs": net.get("ncs"),
+                    "participant_count": len(net.get("participants") or []),
+                    "summary": net.get("summary"),
+                    "confidence": (net.get("stats") or {}).get("confidence"),
+                }
+            )
+
+        validator_prompt = json.dumps(
+            {
+                "transcript_digests": digest_parts,
+                "claimed_nets": nets_outline,
+            },
+            ensure_ascii=False,
+        )
+
+        prompt = (
+            "You are the validation pass for amateur radio net detection. "
+            "Given transcript digests and proposed nets, mark each net as valid=true|false, "
+            "include a confidence score 0-1, and a reason. Provide JSON of the form "
+            "{\"validations\": [{\"name\": \"...\", \"valid\": true, \"confidence\": 0.9, \"reason\": \"...\"}]}"."
+            f"\nINPUT:\n{validator_prompt}"
+        )
+
+        try:
+            response_text, _ = await self.call_vllm(prompt, pass_label="validator")
+            result = json.loads(response_text)
+        except Exception as exc:  # pragma: no cover - validation best-effort
+            logger.warning("analysis_net_validation_failed", error=str(exc))
+            return nets
+
+        validations = {item.get("name"): item for item in (result.get("validations") or [])}
+        threshold = max(0.0, min(1.0, self.analysis_settings.net_validation_min_confidence))
+        filtered: list[dict[str, Any]] = []
+        for net in nets:
+            name = net.get("name")
+            verdict = validations.get(name)
+            if not verdict:
+                self._log_net_skip("validator_missing_verdict", net)
+                continue
+            if not verdict.get("valid"):
+                self._log_net_skip(
+                    "validator_rejected",
+                    net,
+                    validator_reason=verdict.get("reason"),
+                )
+                continue
+            if float(verdict.get("confidence") or 0.0) < threshold:
+                self._log_net_skip(
+                    "validator_low_confidence",
+                    net,
+                    validator_confidence=verdict.get("confidence"),
+                    threshold=threshold,
+                )
+                continue
+            filtered.append(net)
+
+        return filtered
+
+    def _log_net_skip(self, reason: str, net: dict[str, Any] | None, **details: Any) -> None:
+        payload: dict[str, Any] = {"reason": reason}
+        if net:
+            payload.update(
+                {
+                    "net_name": net.get("name"),
+                    "confidence": (net.get("stats") or {}).get("confidence"),
+                    "transcript_sources": len(net.get("sources") or []),
+                }
+            )
+        payload.update(details)
+        logger.info("analysis_skip_net", **payload)
+
     async def _persist_analysis(self, contexts: list[ContextEntry], payload: dict[str, Any]) -> None:
         context_map = self._resolve_context_map(contexts)
         await self._persist_nets(payload.get("nets"), context_map)
         await self._persist_callsign_profiles(payload.get("callsigns"), context_map)
         await self._persist_clubs(payload.get("clubs"), context_map)
         await self._persist_trends(payload.get("trends"))
+        await self._persist_merge_suggestions(payload.get("merge_suggestions"))
 
     async def _finalize_audio_metadata(self, contexts: list[ContextEntry]) -> None:
         if not contexts:
@@ -912,6 +1137,30 @@ If you need more context to finish a net, include a top-level
                         observations={**obs, "callsigns": ctx.callsigns},
                     )
                 )
+            await session.flush()
+
+    async def _record_ai_pass_metric(
+        self,
+        *,
+        backend: str,
+        pass_label: str,
+        latency_ms: int | None,
+        success: bool,
+        error: str | None = None,
+    ) -> None:
+        async with get_session() as session:
+            metric = ProcessingMetric(
+                stage=f"ai_pass_{backend}",
+                processing_time_ms=max(0, latency_ms or 0),
+                success=success,
+                error_message=error,
+                timestamp=datetime.now(timezone.utc),
+                metadata_={
+                    "pass_label": pass_label,
+                    "backend": backend,
+                },
+            )
+            session.add(metric)
             await session.flush()
 
     def _resolve_openai_client(self) -> AsyncOpenAI | None:
@@ -991,6 +1240,12 @@ If you need more context to finish a net, include a top-level
                 response_format={"type": "json_object"},
             )
             latency_ms = int((time.perf_counter() - start) * 1000)
+            await self._record_ai_pass_metric(
+                backend="openai",
+                pass_label="crosscheck",
+                latency_ms=latency_ms,
+                success=True,
+            )
         except Exception as exc:  # pragma: no cover - network variability
             logger.warning("analysis_crosscheck_failed", error=str(exc))
             return None
@@ -1053,9 +1308,9 @@ If you need more context to finish a net, include a top-level
             prompt = self._build_prompt(context_block)
 
             try:
-                start = time.perf_counter()
-                response_text, response_meta = await self.call_vllm(prompt)
-                vllm_latency_ms = int((time.perf_counter() - start) * 1000)
+                pass_label = contexts[0].pass_type if contexts else "analysis"
+                response_text, response_meta = await self.call_vllm(prompt, pass_label=pass_label)
+                vllm_latency_ms = (response_meta or {}).get("latency_ms")
                 payload = json.loads(response_text)
                 usage = (response_meta or {}).get("usage") or {}
                 response_tokens = usage.get("total_tokens") or usage.get("completion_tokens")
@@ -1090,6 +1345,7 @@ If you need more context to finish a net, include a top-level
 
         batch_pass_type = included[0].pass_type if included else "primary"
         payload = payload or {}
+        payload["nets"] = await self._validate_detected_nets(included, payload.get("nets"))
         await self._persist_analysis(included, payload)
         await self._mark_audio_files([ctx.audio_id for ctx in included], AudioFileState.COMPLETE)
         await self._finalize_audio_metadata(included)

@@ -185,6 +185,18 @@ class AnalysisSettings(BaseSettings):
         default="gpt-4o-mini",
         description="Model used for OpenAI Responses cross-checks",
     )
+    net_validation_enabled: bool = Field(
+        default=True,
+        description="Perform a second vLLM pass to validate detected nets before persisting",
+    )
+    net_validation_min_confidence: float = Field(
+        default=0.6,
+        description="Minimum validator confidence to keep a detected net",
+    )
+    merge_suggestion_enabled: bool = Field(
+        default=True,
+        description="Capture merge/alias suggestions from analyzer output",
+    )
 
     model_config = SettingsConfigDict(env_prefix="TSN_ANALYSIS_")
 
