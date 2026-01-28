@@ -335,7 +335,7 @@ class TranscriptAnalyzer:
         # Log aggressive warnings when GPU is underutilized
         if value < self.analysis_settings.gpu_low_utilization_pct:
             logger.warning(
-                \"gpu_underutilized_warning\",
+                "gpu_underutilized_warning",
                 utilization=value,
                 threshold=self.analysis_settings.gpu_low_utilization_pct,
                 idle_streak=self._idle_streak_count,
