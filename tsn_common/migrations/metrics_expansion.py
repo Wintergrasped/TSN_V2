@@ -27,45 +27,61 @@ class MetricsExpansionMigrator:
     async def _ensure_transcription_columns(self) -> None:
         async with self.engine.begin() as conn:
             logger.info("metrics_expansion_checking_transcriptions")
-            await conn.execute(
+            
+            # Check which columns exist
+            result = await conn.execute(
                 text(
-                    "ALTER TABLE `transcriptions` "
-                    "ADD COLUMN IF NOT EXISTS `smoothed_text` LONGTEXT NULL"
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() "
+                    "AND TABLE_NAME = 'transcriptions' "
+                    "AND COLUMN_NAME IN ('smoothed_text', 'smoothed_metadata', 'smoothed_at')"
                 )
             )
-            await conn.execute(
-                text(
-                    "ALTER TABLE `transcriptions` "
-                    "ADD COLUMN IF NOT EXISTS `smoothed_metadata` JSON NULL"
+            existing = {row[0] for row in result.fetchall()}
+            
+            # Only add columns that don't exist
+            if 'smoothed_text' not in existing:
+                await conn.execute(
+                    text("ALTER TABLE `transcriptions` ADD COLUMN `smoothed_text` LONGTEXT NULL")
                 )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE `transcriptions` "
-                    "ADD COLUMN IF NOT EXISTS `smoothed_at` DATETIME(6) NULL"
+            if 'smoothed_metadata' not in existing:
+                await conn.execute(
+                    text("ALTER TABLE `transcriptions` ADD COLUMN `smoothed_metadata` JSON NULL")
                 )
-            )
+            if 'smoothed_at' not in existing:
+                await conn.execute(
+                    text("ALTER TABLE `transcriptions` ADD COLUMN `smoothed_at` DATETIME(6) NULL")
+                )
+            
             logger.info("metrics_expansion_transcriptions_ready")
 
     async def _ensure_net_formal_structure_columns(self) -> None:
         async with self.engine.begin() as conn:
             logger.info("metrics_expansion_checking_net_sessions")
-            await conn.execute(
+            
+            # Check which columns exist
+            result = await conn.execute(
                 text(
-                    "ALTER TABLE `net_sessions` "
-                    "ADD COLUMN IF NOT EXISTS `formal_structure` JSON NULL"
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() "
+                    "AND TABLE_NAME = 'net_sessions' "
+                    "AND COLUMN_NAME IN ('formal_structure', 'ncs_script', 'checkin_sequence')"
                 )
             )
-            await conn.execute(
-                text(
-                    "ALTER TABLE `net_sessions` "
-                    "ADD COLUMN IF NOT EXISTS `ncs_script` JSON NULL"
+            existing = {row[0] for row in result.fetchall()}
+            
+            # Only add columns that don't exist
+            if 'formal_structure' not in existing:
+                await conn.execute(
+                    text("ALTER TABLE `net_sessions` ADD COLUMN `formal_structure` JSON NULL")
                 )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE `net_sessions` "
-                    "ADD COLUMN IF NOT EXISTS `checkin_sequence` JSON NULL"
+            if 'ncs_script' not in existing:
+                await conn.execute(
+                    text("ALTER TABLE `net_sessions` ADD COLUMN `ncs_script` JSON NULL")
                 )
-            )
+            if 'checkin_sequence' not in existing:
+                await conn.execute(
+                    text("ALTER TABLE `net_sessions` ADD COLUMN `checkin_sequence` JSON NULL")
+                )
+            
             logger.info("metrics_expansion_net_sessions_ready")
