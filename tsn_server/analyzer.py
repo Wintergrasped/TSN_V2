@@ -135,17 +135,24 @@ class TranscriptAnalyzer:
         if backlog < threshold:
             return False
 
+        analysis_backlog = await self._analysis_backlog_depth()
         priority_floor = max(0, self.analysis_settings.analysis_queue_priority_floor)
-        if priority_floor > 0:
-            analysis_backlog = await self._analysis_backlog_depth()
-            if analysis_backlog >= priority_floor:
-                logger.debug(
-                    "analysis_overriding_transcription_pause",
-                    transcription_backlog=backlog,
-                    analysis_backlog=analysis_backlog,
-                    priority_floor=priority_floor,
-                )
-                return False
+        if priority_floor > 0 and analysis_backlog >= priority_floor:
+            logger.debug(
+                "analysis_overriding_transcription_pause",
+                transcription_backlog=backlog,
+                analysis_backlog=analysis_backlog,
+                priority_floor=priority_floor,
+            )
+            return False
+
+        if analysis_backlog > 0:
+            logger.debug(
+                "analysis_continuing_despite_transcription_backlog",
+                transcription_backlog=backlog,
+                analysis_backlog=analysis_backlog,
+            )
+            return False
 
         logger.debug(
             "analysis_paused_for_transcription",
