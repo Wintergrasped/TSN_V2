@@ -103,6 +103,17 @@ class TranscriptAnalyzer:
         if self._openai_client is not None:
             await self._openai_client.close()
 
+    async def _analysis_backlog_depth(self) -> int:
+        backlog_states = (
+            AudioFileState.QUEUED_ANALYSIS,
+            AudioFileState.ANALYZING,
+        )
+        async with get_session() as session:
+            result = await session.execute(
+                select(func.count(AudioFile.id)).where(AudioFile.state.in_(backlog_states))
+            )
+            return result.scalar_one()
+
     async def _should_pause_for_transcription(self) -> bool:
         """Return True when transcription/extraction backlog should pre-empt analysis."""
         threshold = self.analysis_settings.transcription_backlog_pause
@@ -121,14 +132,27 @@ class TranscriptAnalyzer:
             )
             backlog = result.scalar_one()
 
-        if backlog >= threshold:
-            logger.debug(
-                "analysis_paused_for_transcription",
-                backlog=backlog,
-                threshold=threshold,
-            )
-            return True
-        return False
+        if backlog < threshold:
+            return False
+
+        priority_floor = max(0, self.analysis_settings.analysis_queue_priority_floor)
+        if priority_floor > 0:
+            analysis_backlog = await self._analysis_backlog_depth()
+            if analysis_backlog >= priority_floor:
+                logger.debug(
+                    "analysis_overriding_transcription_pause",
+                    transcription_backlog=backlog,
+                    analysis_backlog=analysis_backlog,
+                    priority_floor=priority_floor,
+                )
+                return False
+
+        logger.debug(
+            "analysis_paused_for_transcription",
+            backlog=backlog,
+            threshold=threshold,
+        )
+        return True
 
     async def _load_callsign_strings(self, transcription_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
         if not transcription_ids:

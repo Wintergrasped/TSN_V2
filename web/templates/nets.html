@@ -2,7 +2,10 @@
 {% block title %}Net Sessions{% endblock %}
 {% block content %}
 <h2>Organized Nets</h2>
-<table>
+<div class="chip-row">
+    <input type="search" placeholder="Search nets, clubs, or times" data-search-target="#nets-table tbody tr" data-search-empty="#nets-empty" />
+</div>
+<table id="nets-table">
     <thead>
         <tr>
             <th>Name</th>
@@ -16,7 +19,7 @@
     </thead>
     <tbody>
         {% for net in nets %}
-        <tr>
+        <tr data-search-text="{{ net.name }} {{ net.club }} {{ net.start_time }}">
             <td><a href="/nets/{{ net.id }}">{{ net.name }}</a></td>
             <td>{{ net.club or '—' }}</td>
             <td>{{ net.start_time }}</td>
@@ -28,4 +31,5 @@
         {% endfor %}
     </tbody>
 </table>
+<p id="nets-empty" class="muted" hidden>No nets match your search.</p>
 {% endblock %}

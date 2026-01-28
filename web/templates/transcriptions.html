@@ -2,12 +2,16 @@
 {% block title %}Transcriptions{% endblock %}
 {% block content %}
 <h2>Recent Transcriptions</h2>
+<div class="chip-row">
+    <input type="search" placeholder="Search by snippet, timestamp, or confidence" data-search-target="[data-transcription-card]" data-search-empty="#transcriptions-empty" />
+</div>
 <div class="grid">
     {% for tx in transcriptions %}
-    <article class="card">
+    <article class="card" data-transcription-card data-search-text="{{ tx.preview }} {{ tx.created_at }} {{ tx.confidence }}">
         <p class="muted">{{ tx.created_at }} • confidence {{ tx.confidence or 'n/a' }}</p>
         <p>{{ tx.preview }}{% if tx.preview|length == 280 %}…{% endif %}</p>
     </article>
     {% endfor %}
 </div>
+<p id="transcriptions-empty" class="muted" hidden>No transcriptions match your search.</p>
 {% endblock %}

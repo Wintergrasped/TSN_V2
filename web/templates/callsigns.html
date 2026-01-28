@@ -1,42 +1,69 @@
 {% extends "base.html" %}
 {% block title %}Callsign Directory{% endblock %}
 {% block content %}
-<h2>QRZ Confirmed Callsigns</h2>
-<p class="muted">Only operators confirmed through the QRZ XML API are listed. Everything else remains in a pending state until QRZ validates it.</p>
-<table>
-    <thead>
-        <tr>
-            <th>Callsign</th>
-            <th>First Heard</th>
-            <th>Last Heard</th>
-            <th>Mentions</th>
-            <th>Validated Via</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for cs in callsigns %}
-        <tr>
-            <td>{{ callsign_link(cs.callsign) }}</td>
-            <td>{{ cs.first_seen }}</td>
-            <td>{{ cs.last_seen }}</td>
-            <td>{{ cs.seen_count }}</td>
-            <td>{{ cs.validation_method|upper if cs.validation_method else 'UNVERIFIED' }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-
-<h3>Trend Snapshots</h3>
-<div class="grid">
-    {% for trend in trends %}
-    <article>
-        <p class="muted">{{ trend.window_start }} → {{ trend.window_end }}</p>
-        <div class="chip-row">
-            {% for topic in trend.topics %}
-                <span class="chip">{{ topic }}</span>
-            {% endfor %}
+<section class="card">
+    <div class="card-header">
+        <div>
+            <h2>QRZ Confirmed Callsigns</h2>
+            <p class="muted">Only operators confirmed through the QRZ XML API are listed. Everything else remains in a pending state until QRZ validates it.</p>
+            {% if node_scope and node_scope != 'all' %}
+            <p class="muted">Currently filtered to node <strong>{{ node_scope }}</strong>.</p>
+            {% endif %}
         </div>
-    </article>
-    {% endfor %}
-</div>
+        <div class="chip-row">
+            <input type="search" placeholder="Search callsigns, notes, or validation" data-search-target="#callsign-table tbody tr" data-search-empty="#callsign-empty" />
+            <button type="button" data-async-reload="#callsign-table">Refresh</button>
+        </div>
+    </div>
+    <div class="table-wrapper">
+        <table id="callsign-table">
+            <thead>
+                <tr>
+                    <th>Callsign</th>
+                    <th>First Heard</th>
+                    <th>Last Heard</th>
+                    <th>Mentions</th>
+                    <th>Validated Via</th>
+                </tr>
+            </thead>
+            <tbody data-async-table data-row-type="callsign" data-endpoint="{{ callsign_feed_url }}" data-columns="5" data-empty="#callsign-empty">
+                <tr data-loading-row>
+                    <td colspan="5" class="muted">Loading callsigns…</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <p id="callsign-empty" class="muted" hidden>No callsigns match your filters yet.</p>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h3>Trend Snapshots</h3>
+        <input type="search" placeholder="Search topics, callsigns, notes" data-search-target="[data-trend-card]" data-search-empty="#trend-empty" />
+    </div>
+    <div class="grid" id="trend-grid">
+        {% for trend in trends %}
+        <article class="card" data-trend-card data-search-text="{{ ((trend.topics or []) + (trend.callsigns or []))|join(' ') }} {{ trend.notes }} {{ (trend.notable_nets or [])|join(' ') }}">
+            <p class="muted">{{ trend.window_start }} → {{ trend.window_end }}</p>
+            {% if trend.topics %}
+            <div class="chip-row">
+                {% for topic in trend.topics %}
+                <span class="chip" data-search-text="{{ topic }}">{{ topic }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if trend.callsigns %}
+            <p class="muted">Callsigns: {{ trend.callsigns | join(', ') }}</p>
+            {% endif %}
+            {% if trend.notable_nets %}
+            <p class="muted">Nets: {{ trend.notable_nets | join(', ') }}</p>
+            {% endif %}
+            {% if trend.notes %}
+            <p>{{ trend.notes }}</p>
+            {% endif %}
+        </article>
+        {% endfor %}
+    </div>
+    <p id="trend-empty" class="muted" hidden>No topics match your search.</p>
+</section>
 {% endblock %}

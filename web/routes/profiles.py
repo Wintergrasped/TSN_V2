@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload
 
 from tsn_common.models import Callsign, CallsignProfile, ClubMembership, ClubProfile
@@ -14,6 +15,10 @@ from tsn_common.utils import normalize_callsign
 from web.dependencies import get_current_user, get_db_session, maybe_current_user, templates
 from web.models.user import PortalUser
 from web.services import net_control, profiles
+
+from tsn_common.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -154,11 +159,19 @@ async def update_club_note(
 async def net_control_page(
     request: Request,
     session=Depends(get_db_session),
-    current_user: PortalUser = Depends(get_current_user),
+    current_user=Depends(maybe_current_user),
 ):
-    active = await net_control.get_active_session(session)
-    sessions = await net_control.list_sessions(session)
-    feed = await net_control.fetch_checkin_feed(session, limit=25)
+    active = None
+    sessions: list[dict] = []
+    feed: list[dict] = []
+    load_error = None
+    try:
+        active = await net_control.get_active_session(session)
+        sessions = await net_control.list_sessions(session)
+        feed = await net_control.fetch_checkin_feed(session, limit=25)
+    except SQLAlchemyError as exc:
+        logger.error("net_control_page_load_failed", error=str(exc))
+        load_error = "Unable to load live net data. Please try again in a moment."
     return templates.TemplateResponse(
         "net_control.html",
         {
@@ -167,6 +180,8 @@ async def net_control_page(
             "active_session": active,
             "sessions": sessions,
             "feed": feed,
+            "requires_login": current_user is None,
+            "load_error": load_error,
         },
     )
 

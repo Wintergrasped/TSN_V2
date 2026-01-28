@@ -1,5 +1,7 @@
 """Server-rendered pages for the KK7NQN-inspired dashboard."""
 
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -7,11 +9,11 @@ from web.dependencies import get_current_user, get_db_session, maybe_current_use
 from web.services.dashboard import (
     get_club_profiles,
     get_dashboard_payload,
-    get_recent_callsigns,
     get_recent_nets,
     get_recent_transcriptions,
     get_system_health,
     get_trend_highlights,
+    normalize_node_scope,
 )
 from web.services import nets
 from web.services import user_dashboard as user_dash_service
@@ -40,18 +42,27 @@ async def landing_page(
 @router.get("/callsigns", response_class=HTMLResponse)
 async def callsign_page(
     request: Request,
+    node: str | None = None,
     session=Depends(get_db_session),
     current_user=Depends(maybe_current_user),
 ):
-    callsigns = await get_recent_callsigns(session, limit=200)
+    node_scope = normalize_node_scope(node)
+    query = {
+        "limit": 400,
+        "order": "mentions",
+    }
+    if node_scope != "all":
+        query["node"] = node_scope
+    feed_url = f"/api/callsigns?{urlencode(query)}"
     trends = await get_trend_highlights(session)
     return templates.TemplateResponse(
         "callsigns.html",
         {
             "request": request,
-            "callsigns": callsigns,
             "trends": trends,
             "current_user": current_user,
+            "callsign_feed_url": feed_url,
+            "node_scope": node_scope,
         },
     )
 
@@ -116,7 +127,7 @@ async def clubs_page(
     session=Depends(get_db_session),
     current_user=Depends(maybe_current_user),
 ):
-    clubs = await get_club_profiles(session, limit=100)
+    clubs = await get_club_profiles(session, limit=100, order_by="mentions")
     return templates.TemplateResponse(
         "clubs.html",
         {

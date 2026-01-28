@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -125,6 +126,62 @@ def _schedule_alias_refresh(club_names: list[str], cache_key: str) -> None:
     _alias_task.add_done_callback(_log_task_failure("alias_refresh"))
 
 
+def _flatten_ai_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        if isinstance(value, int):
+            return f"{value:,}"
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            flattened = _flatten_ai_value(item)
+            if flattened:
+                parts.append(flattened)
+        if not parts:
+            return ""
+        preview = ", ".join(parts[:4])
+        if len(parts) > 4:
+            preview = f"{preview}, ..."
+        return preview
+    if isinstance(value, dict):
+        inner: list[str] = []
+        for key, val in value.items():
+            flattened = _flatten_ai_value(val)
+            if flattened:
+                inner.append(f"{key}: {flattened}")
+        return "; ".join(inner)
+    return str(value)
+
+
+def _humanize_ai_summary(text: str | None) -> str:
+    default = "AI summary unavailable."
+    if not text:
+        return default
+    snippet = text.strip()
+    if not snippet:
+        return default
+    if snippet[0] in "[{":
+        try:
+            parsed = json.loads(snippet)
+        except json.JSONDecodeError:
+            return snippet
+        if isinstance(parsed, dict):
+            parts = []
+            for key, value in parsed.items():
+                flattened = _flatten_ai_value(value)
+                if flattened:
+                    parts.append(f"{key.title()}: {flattened}")
+            return "; ".join(parts) if parts else default
+        if isinstance(parsed, list):
+            flattened = _flatten_ai_value(parsed)
+            return flattened or default
+    return snippet
+
+
 def _schedule_summary_refresh(snapshot: dict[str, Any]) -> None:
     global _summary_task
     if _summary_task and not _summary_task.done():
@@ -215,16 +272,23 @@ async def get_recent_callsigns(
     session: AsyncSession,
     limit: int = 25,
     node_scope: str = "all",
+    order_by: str = "recent",
+    search: str | None = None,
 ) -> list[dict]:
     clause = _node_clause(node_scope)
+    order_mode = (order_by or "recent").lower()
+    search_pattern = f"%{search.strip().upper()}%" if search else None
+
     if clause is None:
         priority = case((Callsign.validation_method == ValidationMethod.QRZ, 0), else_=1)
-        stmt = (
-            select(Callsign)
-            .where(Callsign.validated.is_(True))
-            .order_by(priority, Callsign.last_seen.desc())
-            .limit(limit)
-        )
+        stmt = select(Callsign).where(Callsign.validated.is_(True))
+        if search_pattern:
+            stmt = stmt.where(func.upper(Callsign.callsign).like(search_pattern))
+        if order_mode == "mentions":
+            stmt = stmt.order_by(Callsign.seen_count.desc(), Callsign.last_seen.desc())
+        else:
+            stmt = stmt.order_by(priority, Callsign.last_seen.desc())
+        stmt = stmt.limit(limit)
         result = await session.execute(stmt)
         records = [
             {
@@ -255,9 +319,18 @@ async def get_recent_callsigns(
     stmt = (
         select(Callsign, activity_subquery.c.last_seen, activity_subquery.c.segment_count)
         .join(activity_subquery, activity_subquery.c.callsign_id == Callsign.id)
-        .order_by(activity_subquery.c.last_seen.desc())
-        .limit(limit)
     )
+    if search_pattern:
+        stmt = stmt.where(func.upper(Callsign.callsign).like(search_pattern))
+    if order_mode == "mentions":
+        stmt = stmt.order_by(
+            func.coalesce(activity_subquery.c.segment_count, 0).desc(),
+            activity_subquery.c.last_seen.desc(),
+        )
+    else:
+        stmt = stmt.order_by(activity_subquery.c.last_seen.desc())
+    stmt = stmt.limit(limit)
+
     result = await session.execute(stmt)
 
     records: list[dict] = []
@@ -353,27 +426,61 @@ async def get_trend_highlights(session: AsyncSession, limit: int = 5) -> list[di
     ]
 
 
-async def get_club_profiles(session: AsyncSession, limit: int = 25) -> list[dict]:
+async def get_club_profiles(
+    session: AsyncSession,
+    limit: int = 25,
+    order_by: str = "recent",
+    search: str | None = None,
+) -> list[dict]:
+    order_mode = (order_by or "recent").lower()
+    search_pattern = f"%{search.strip().upper()}%" if search else None
+
+    mention_stats = (
+        select(
+            NetSession.club_name.label("club_name"),
+            func.count(NetSession.id).label("mention_count"),
+            func.max(NetSession.start_time).label("last_session_at"),
+        )
+        .where(NetSession.club_name.isnot(None))
+        .group_by(NetSession.club_name)
+        .subquery()
+    )
+
     stmt = (
-        select(ClubProfile)
-        # MySQL/MariaDB do not support NULLS LAST, so emulate it with a boolean sort key.
-        .order_by(
+        select(ClubProfile, mention_stats.c.mention_count, mention_stats.c.last_session_at)
+        .outerjoin(mention_stats, mention_stats.c.club_name == ClubProfile.name)
+    )
+    if search_pattern:
+        stmt = stmt.where(func.upper(ClubProfile.name).like(search_pattern))
+    if order_mode == "mentions":
+        stmt = stmt.order_by(
+            func.coalesce(mention_stats.c.mention_count, 0).desc(),
+            mention_stats.c.last_session_at.is_(None),
+            mention_stats.c.last_session_at.desc(),
+            ClubProfile.name.asc(),
+        )
+    else:
+        stmt = stmt.order_by(
             ClubProfile.last_analyzed_at.is_(None),
             ClubProfile.last_analyzed_at.desc(),
         )
-        .limit(limit)
-    )
+    stmt = stmt.limit(limit)
+
     result = await session.execute(stmt)
-    return [
-        {
-            "name": club.name,
-            "summary": club.summary,
-            "schedule": club.schedule,
-            "members": club.metadata_.get("member_count") if club.metadata_ else None,
-            "last_analyzed_at": club.last_analyzed_at.isoformat() if club.last_analyzed_at else None,
-        }
-        for club in result.scalars().unique().all()
-    ]
+    clubs: list[dict] = []
+    for club, mention_count, last_session_at in result.all():
+        clubs.append(
+            {
+                "name": club.name,
+                "summary": club.summary,
+                "schedule": club.schedule,
+                "members": club.metadata_.get("member_count") if club.metadata_ else None,
+                "last_analyzed_at": club.last_analyzed_at.isoformat() if club.last_analyzed_at else None,
+                "mention_count": int(mention_count or 0),
+                "last_mentioned_at": last_session_at.isoformat() if last_session_at else None,
+            }
+        )
+    return clubs
 
 
 async def get_system_health(session: AsyncSession) -> list[dict]:
@@ -520,6 +627,7 @@ async def get_dashboard_payload(session: AsyncSession, node_scope: str | None = 
 
     if not ai_sections:
         ai_sections = _DEFAULT_AI_SECTIONS.copy()
+    ai_sections = {key: _humanize_ai_summary(value) for key, value in ai_sections.items()}
 
     stats_cards = [
         {

@@ -141,7 +141,7 @@ class AnalysisSettings(BaseSettings):
     worker_count: int = Field(default=2, description="Concurrent analysis workers")
     max_batch_size: int = Field(default=4, description="Max transcripts per analysis batch")
     max_context_extensions: int = Field(
-        default=2,
+        default=4,
         description="How many times analysis can append extra transcripts when LLM requests more context",
     )
     context_char_budget: int = Field(
@@ -153,6 +153,10 @@ class AnalysisSettings(BaseSettings):
         default=20,
         description="Pause analysis when >= this many files await transcription/extraction",
     )
+    analysis_queue_priority_floor: int = Field(
+        default=400,
+        description="Minimum queued analysis items required to ignore transcription pauses",
+    )
     idle_poll_interval_sec: float = Field(
         default=2.0,
         description="Sleep interval when no analysis work is available",
@@ -162,7 +166,7 @@ class AnalysisSettings(BaseSettings):
         description="Minimum minutes between trend snapshots to avoid churn",
     )
     refinement_window_hours: int = Field(
-        default=18,
+        default=38,
         description="How far back (hours) to look when backfilling idle refinements",
     )
     refinement_batch_size: int = Field(
@@ -170,11 +174,11 @@ class AnalysisSettings(BaseSettings):
         description="How many completed files to requeue per idle refinement cycle",
     )
     max_refinement_passes: int = Field(
-        default=3,
+        default=10,
         description="Maximum number of analysis passes (primary + refinements) per audio file",
     )
     crosscheck_enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable opportunistic OpenAI Responses cross-checks",
     )
     crosscheck_probability: float = Field(
@@ -202,7 +206,7 @@ class AnalysisSettings(BaseSettings):
         description="Monitor GPU utilization from the analyzer container",
     )
     gpu_low_utilization_pct: float = Field(
-        default=35.0,
+        default=65.0,
         description="Below this percent the GPU is considered idle and backfill work is triggered",
     )
     gpu_check_interval_sec: float = Field(
@@ -230,7 +234,7 @@ class AnalysisSettings(BaseSettings):
         description="Minimum hours before a callsign profile becomes eligible for refresh",
     )
     profile_context_hours: int = Field(
-        default=240,
+        default=640,
         description="Historical window (hours) of data summarized for profile refresh prompts",
     )
     profile_batch_size: int = Field(

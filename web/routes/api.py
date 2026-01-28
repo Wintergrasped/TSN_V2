@@ -13,6 +13,7 @@ from web.services.dashboard import (
     get_recent_transcriptions,
     get_system_health,
     get_trend_highlights,
+    normalize_node_scope,
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -24,8 +25,21 @@ async def api_dashboard(session=Depends(get_db_session)):
 
 
 @router.get("/callsigns")
-async def api_callsigns(session=Depends(get_db_session), limit: int = 200):
-    return await get_recent_callsigns(session, limit=limit)
+async def api_callsigns(
+    session=Depends(get_db_session),
+    limit: int = 200,
+    order: str = "recent",
+    q: str | None = None,
+    node: str | None = None,
+):
+    node_scope = normalize_node_scope(node)
+    return await get_recent_callsigns(
+        session,
+        limit=limit,
+        node_scope=node_scope,
+        order_by=order,
+        search=q,
+    )
 
 
 @router.get("/callsigns/{callsign}")
@@ -55,8 +69,13 @@ async def api_transcriptions(session=Depends(get_db_session), limit: int = 50):
 
 
 @router.get("/clubs")
-async def api_clubs(session=Depends(get_db_session), limit: int = 100):
-    return await get_club_profiles(session, limit=limit)
+async def api_clubs(
+    session=Depends(get_db_session),
+    limit: int = 100,
+    order: str = "recent",
+    q: str | None = None,
+):
+    return await get_club_profiles(session, limit=limit, order_by=order, search=q)
 
 
 @router.get("/clubs/{club_name}")

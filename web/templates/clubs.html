@@ -2,17 +2,19 @@
 {% block title %}Club Profiles{% endblock %}
 {% block content %}
 <h2>Clubs & Organizations</h2>
+<div class="chip-row">
+    <input type="search" placeholder="Search clubs, regions, or schedules" data-search-target="[data-club-card]" data-search-empty="#clubs-empty" />
+</div>
 <div class="grid">
     {% for club in clubs %}
-        <article class="card">
-            <h3><a href="/clubs/{{ club.name }}">{{ club.canonical_name or club.name }}</a></h3>
+        <article class="card" data-club-card data-search-text="{{ club.name }} {{ club.summary }} {{ club.schedule }}">
+            <h3><a href="/clubs/{{ club.name }}">{{ club.name }}</a></h3>
             <p>{{ club.summary or 'No narrative yet.' }}</p>
             <p class="muted">Schedule: {{ club.schedule or 'n/a' }}</p>
             <p class="muted">Members tracked: {{ club.members or 'unknown' }}</p>
-            {% if club.aliases %}
-                <p class="muted">Aliases: {{ club.aliases | join(', ') }}</p>
-            {% endif %}
+            <p class="muted">Mentions logged: {{ club.mention_count or 0 }}{% if club.last_mentioned_at %} • last heard {{ club.last_mentioned_at }}{% endif %}</p>
         </article>
     {% endfor %}
 </div>
+<p id="clubs-empty" class="muted" hidden>No clubs match your search.</p>
 {% endblock %}
