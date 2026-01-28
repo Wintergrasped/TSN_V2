@@ -1023,7 +1023,7 @@ If you need more context to finish a net, include a top-level
             "You are the validation pass for amateur radio net detection. "
             "Given transcript digests and proposed nets, mark each net as valid=true|false, "
             "include a confidence score 0-1, and a reason. Provide JSON of the form "
-            "{\"validations\": [{\"name\": \"...\", \"valid\": true, \"confidence\": 0.9, \"reason\": \"...\"}]}"."
+            "{\"validations\": [{\"name\": \"...\", \"valid\": true, \"confidence\": 0.9, \"reason\": \"...\"}]}."
             f"\nINPUT:\n{validator_prompt}"
         )
 
