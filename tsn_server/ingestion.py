@@ -21,6 +21,12 @@ from tsn_common.utils import (
     parse_audio_filename_metadata,
 )
 
+try:
+    from scripts.fix_audio_node_ids import repair_node_ids
+    REPAIR_AVAILABLE = True
+except ImportError:
+    REPAIR_AVAILABLE = False
+
 logger = get_logger(__name__)
 
 
@@ -42,6 +48,7 @@ class IngestionService:
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.poll_interval = server_settings.poll_interval_sec
+        self._startup_repair_done = False
         
         logger.info(
             "ingestion_service_initialized",
@@ -138,6 +145,15 @@ class IngestionService:
                             filename_node=filename_node_id,
                         )
                     inferred_node_id = filename_node_id
+                
+                # Log node_id extraction for multi-node deployments
+                if filename_node_id and filename_node_id != "unknown":
+                    logger.info(
+                        "node_id_extracted_from_filename",
+                        filename=file_path.name,
+                        node_id=filename_node_id,
+                        format=filename_meta.get("format"),
+                    )
                 
                 # Move to storage (handle cross-device moves)
                 storage_path = self.storage_dir / file_path.name
@@ -250,6 +266,21 @@ class IngestionService:
         """
         interval = interval_sec or self.poll_interval
         logger.info("ingestion_loop_started", interval_sec=interval)
+        
+        # Run node_id repair on first loop to fix any historical records
+        if not self._startup_repair_done and REPAIR_AVAILABLE:
+            try:
+                logger.info("running_startup_node_id_repair")
+                await repair_node_ids(limit=1000)
+                logger.info("startup_node_id_repair_complete")
+            except Exception as exc:
+                logger.warning(
+                    "startup_node_id_repair_failed",
+                    error=str(exc),
+                    exc_info=True,
+                )
+            finally:
+                self._startup_repair_done = True
         
         while True:
             try:
