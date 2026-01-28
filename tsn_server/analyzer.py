@@ -444,6 +444,10 @@ class TranscriptAnalyzer:
         if not await self._gpu_is_underutilized():
             return None
 
+        smoothing = await self._run_idle_smoothing_pass()
+        if smoothing:
+            return "smoothing_backfill"
+
         refinement = await self._queue_refinement_work()
         if refinement:
             return "audio_requeued"
@@ -636,6 +640,58 @@ class TranscriptAnalyzer:
                 ctx.smoothed_text = result.get("smoothed_text")
                 ctx.smoothed_metadata = result.get("smoothed_metadata")
                 ctx.smoothed_at = result.get("smoothed_at")
+
+    async def _select_unsmoothed_contexts(self, limit: int) -> list[ContextEntry]:
+        """Return arbitrary transcript contexts that still need smoothing."""
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(AudioFile, Transcription)
+                .join(Transcription, AudioFile.id == Transcription.audio_file_id)
+                .where(Transcription.smoothed_text.is_(None))
+                .order_by(Transcription.created_at.desc())
+                .limit(limit)
+            )
+            rows = result.all()
+
+        if not rows:
+            return []
+
+        callsign_map = await self._load_callsign_strings([tx.id for _, tx in rows])
+        contexts: list[ContextEntry] = []
+        for idx, (audio_file, transcription) in enumerate(rows, start=1):
+            contexts.append(
+                ContextEntry(
+                    index=idx,
+                    audio_id=audio_file.id,
+                    audio_filename=audio_file.filename,
+                    audio_created_at=audio_file.created_at,
+                    audio_duration_sec=audio_file.duration_sec,
+                    transcription_id=transcription.id,
+                    transcript_text=transcription.transcript_text,
+                    callsigns=callsign_map.get(transcription.id, []),
+                    pass_type="smoothing_backfill",
+                    smoothed_text=transcription.smoothed_text,
+                    smoothed_metadata=transcription.smoothed_metadata,
+                    smoothed_at=transcription.smoothed_at,
+                )
+            )
+
+        return contexts
+
+    async def _run_idle_smoothing_pass(self) -> bool:
+        """Smooth historical transcripts when the GPU would otherwise sit idle."""
+
+        if not self.analysis_settings.transcript_smoothing_enabled:
+            return False
+
+        batch_window = max(1, self.analysis_settings.transcript_smoothing_batch_size) * 4
+        contexts = await self._select_unsmoothed_contexts(batch_window)
+        if not contexts:
+            return False
+
+        await self._smooth_context_transcripts(contexts)
+        return True
 
     async def call_vllm(
         self,

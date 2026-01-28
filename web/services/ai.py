@@ -72,6 +72,7 @@ async def _call_vllm(messages: list[dict[str, str]], *, max_tokens: int) -> str:
         "messages": messages,
         "temperature": 0.2,
         "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
     }
 
     client_timeout = min(settings.timeout_sec, _PORTAL_LLM_TIMEOUT_SEC)
