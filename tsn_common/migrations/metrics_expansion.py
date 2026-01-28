@@ -19,6 +19,7 @@ class MetricsExpansionMigrator:
     async def run(self) -> None:
         try:
             await self._ensure_transcription_columns()
+            await self._ensure_net_formal_structure_columns()
         except Exception as exc:  # pragma: no cover - direct SQL migrations
             logger.error("metrics_expansion_failed", error=str(exc))
             raise
@@ -46,3 +47,25 @@ class MetricsExpansionMigrator:
             )
             logger.info("metrics_expansion_transcriptions_ready")
 
+    async def _ensure_net_formal_structure_columns(self) -> None:
+        async with self.engine.begin() as conn:
+            logger.info("metrics_expansion_checking_net_sessions")
+            await conn.execute(
+                text(
+                    "ALTER TABLE `net_sessions` "
+                    "ADD COLUMN IF NOT EXISTS `formal_structure` JSON NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE `net_sessions` "
+                    "ADD COLUMN IF NOT EXISTS `ncs_script` JSON NULL"
+                )
+            )
+            await conn.execute(
+                text(
+                    "ALTER TABLE `net_sessions` "
+                    "ADD COLUMN IF NOT EXISTS `checkin_sequence` JSON NULL"
+                )
+            )
+            logger.info("metrics_expansion_net_sessions_ready")
