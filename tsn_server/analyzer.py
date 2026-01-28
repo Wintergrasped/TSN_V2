@@ -27,6 +27,7 @@ from tsn_common.config import AnalysisSettings, VLLMSettings, get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
 from tsn_common.models import (
+    AiRunLog,
     AnalysisAudit,
     AudioFile,
     AudioFileState,
@@ -38,6 +39,7 @@ from tsn_common.models import (
     ClubMembership,
     ClubProfile,
     ClubRole,
+    GpuUtilizationSample,
     NetParticipation,
     NetSession,
     ProcessingMetric,
@@ -70,6 +72,9 @@ class ContextEntry:
     callsigns: list[str]
     snippet: str = ""
     pass_type: str = "primary"
+    smoothed_text: str | None = None
+    smoothed_metadata: dict[str, Any] | None = None
+    smoothed_at: datetime | None = None
 
 
 class TranscriptAnalyzer:
@@ -83,6 +88,7 @@ class TranscriptAnalyzer:
         self._gpu_last_sample: float = 0.0
         self._gpu_last_value: float | None = None
         self._gpu_warned_missing: bool = False
+        self._gpu_last_persist: float = 0.0
 
         logger.info(
             "analyzer_initialized",
@@ -177,6 +183,9 @@ class TranscriptAnalyzer:
                     transcript_text=transcription.transcript_text,
                     callsigns=callsign_map.get(transcription.id, []),
                     pass_type=metadata.get("analysis_mode", "primary"),
+                    smoothed_text=transcription.smoothed_text,
+                    smoothed_metadata=transcription.smoothed_metadata,
+                    smoothed_at=transcription.smoothed_at,
                 )
             )
 
@@ -221,6 +230,9 @@ class TranscriptAnalyzer:
                     transcript_text=transcription.transcript_text,
                     callsigns=callsign_map.get(transcription.id, []),
                     pass_type=metadata.get("analysis_mode", "primary"),
+                    smoothed_text=transcription.smoothed_text,
+                    smoothed_metadata=transcription.smoothed_metadata,
+                    smoothed_at=transcription.smoothed_at,
                 )
             )
 
@@ -264,7 +276,26 @@ class TranscriptAnalyzer:
         value = await loop.run_in_executor(None, self._query_gpu_utilization_sync)
         self._gpu_last_sample = now
         self._gpu_last_value = value
+
+        if value is not None:
+            persist_interval = max(1.0, self.analysis_settings.gpu_check_interval_sec)
+            if (now - self._gpu_last_persist) >= persist_interval:
+                await self._record_gpu_sample(value)
+                self._gpu_last_persist = now
+
         return value
+
+    async def _record_gpu_sample(self, value: float) -> None:
+        """Persist GPU utilization samples for later capacity analysis."""
+
+        async with get_session() as session:
+            sample = GpuUtilizationSample(
+                utilization_pct=value,
+                sample_source="nvidia-smi",
+                is_saturated=value >= self.analysis_settings.gpu_saturation_threshold_pct,
+            )
+            session.add(sample)
+            await session.flush()
 
     async def _gpu_is_underutilized(self) -> bool:
         """True when GPU utilization is below the configured threshold."""
@@ -307,26 +338,46 @@ class TranscriptAnalyzer:
 
         return await self._reserve_additional_after(pivot.audio_created_at, limit)
 
-    async def _retry_failed_analysis(self, limit: int | None = None) -> int:
+    async def _retry_failed_analysis(self) -> int:
         """Move failed analysis files back into the queue when idle."""
 
-        limit = limit or self.analysis_settings.max_batch_size
+        minutes = max(1, self.analysis_settings.failed_analysis_rescue_minutes)
+        rescue_batch = max(1, self.analysis_settings.failed_analysis_rescue_batch)
+        retry_limit = max(1, self.analysis_settings.failed_analysis_retry_limit)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
         async with get_session() as session:
             result = await session.execute(
                 select(AudioFile)
-                .where(AudioFile.state == AudioFileState.FAILED_ANALYSIS)
+                .where(
+                    AudioFile.state == AudioFileState.FAILED_ANALYSIS,
+                    AudioFile.updated_at <= cutoff,
+                    AudioFile.retry_count < retry_limit,
+                )
                 .order_by(AudioFile.updated_at)
-                .limit(limit)
+                .limit(rescue_batch)
                 .with_for_update(skip_locked=True)
             )
             records = result.scalars().all()
             if not records:
                 return 0
 
+            now = datetime.now(timezone.utc)
             for record in records:
+                metadata = dict(record.metadata_ or {})
+                history = list(metadata.get("failed_analysis_rescues") or [])
+                history.append({"rescued_at": now.isoformat()})
+                metadata["failed_analysis_rescues"] = history[-10:]
+                record.metadata_ = metadata
                 record.state = AudioFileState.QUEUED_ANALYSIS
 
             await session.flush()
+            logger.info(
+                "failed_analysis_rescued",
+                count=len(records),
+                rescue_minutes=minutes,
+                retry_limit=retry_limit,
+            )
             return len(records)
 
     async def _queue_refinement_work(self) -> int:
@@ -428,7 +479,8 @@ class TranscriptAnalyzer:
                 f"Detected Callsigns: {', '.join(ctx.callsigns) or 'Unknown'}\n"
                 "---\n"
             )
-            body = ctx.transcript_text.strip()
+            source_text = ctx.smoothed_text or ctx.transcript_text
+            body = (source_text or "").strip()
             budget_for_body = remaining - len(header) - 1
 
             if budget_for_body <= 0:
@@ -446,12 +498,157 @@ class TranscriptAnalyzer:
 
         return included, "".join(block_parts)
 
-    async def call_vllm(self, prompt: str, *, pass_label: str = "analysis") -> tuple[str, dict[str, Any]]:
-        """Call the vLLM server with automatic loopback fallback."""
+    def _build_smoothing_prompt(self, contexts: Sequence[ContextEntry]) -> str:
+        """Create instructions for transcript smoothing batches."""
+
+        max_chars = max(2000, self.analysis_settings.context_char_budget // 4)
+        payload = []
+        for ctx in contexts:
+            raw_text = (ctx.transcript_text or "").strip()
+            payload.append(
+                {
+                    "transcription_id": str(ctx.transcription_id),
+                    "audio_file": ctx.audio_filename,
+                    "captured": ctx.audio_created_at.isoformat(),
+                    "raw_text": raw_text[:max_chars],
+                }
+            )
+
+        instructions = {
+            "normalize": [
+                "Fix casing and punctuation",
+                "Remove obvious ASR artifacts (um, ah, repeated filler)",
+                "Preserve callsigns and technical terms exactly as heard",
+                "Return concise but faithful conversational text",
+            ],
+            "output_schema": {
+                "smoothed": [
+                    {
+                        "transcription_id": "uuid",
+                        "smoothed_text": "cleaned transcript",
+                        "notes": "optional observations",
+                    }
+                ]
+            },
+        }
+        prompt_blob = json.dumps({"instructions": instructions, "transcripts": payload}, ensure_ascii=False)
+        return (
+            "You polish amateur radio transcripts so downstream AI models spend"
+            " more time analyzing nets than fixing ASR mistakes."
+            " Clean each transcript independently and respond ONLY with JSON"
+            " matching the provided schema."
+            f"\nINPUT:\n{prompt_blob}"
+        )
+
+    async def _persist_smoothed_transcripts(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        latency_ms: int | None = None,
+    ) -> dict[uuid.UUID, dict[str, Any]]:
+        """Update transcription rows with smoothed variants."""
+
+        if not entries:
+            return {}
+
+        now = datetime.now(timezone.utc)
+        updated: dict[uuid.UUID, dict[str, Any]] = {}
+        async with get_session() as session:
+            for entry in entries:
+                raw_id = entry.get("transcription_id") or entry.get("id")
+                cleaned = (entry.get("smoothed_text") or entry.get("text") or "").strip()
+                if not raw_id or not cleaned:
+                    continue
+                try:
+                    transcription_id = uuid.UUID(str(raw_id))
+                except ValueError:
+                    continue
+                record = await session.get(Transcription, transcription_id)
+                if not record:
+                    continue
+
+                metadata = dict(entry.get("metadata") or {})
+                metadata.update(
+                    {
+                        "source": "vllm_smoothing",
+                        "latency_ms": latency_ms,
+                        "notes": entry.get("notes") or entry.get("issues"),
+                    }
+                )
+
+                record.smoothed_text = cleaned
+                record.smoothed_metadata = metadata
+                record.smoothed_at = now
+                updated[transcription_id] = {
+                    "smoothed_text": cleaned,
+                    "smoothed_metadata": metadata,
+                    "smoothed_at": now,
+                }
+            await session.flush()
+        return updated
+
+    async def _smooth_context_transcripts(self, contexts: list[ContextEntry]) -> None:
+        """Request smoothed transcripts via vLLM and persist results."""
+
+        if not contexts or not self.analysis_settings.transcript_smoothing_enabled:
+            return
+
+        pending = [ctx for ctx in contexts if not ctx.smoothed_text]
+        if not pending:
+            return
+
+        batch_size = max(1, self.analysis_settings.transcript_smoothing_batch_size)
+        for start in range(0, len(pending), batch_size):
+            chunk = pending[start : start + batch_size]
+            prompt = self._build_smoothing_prompt(chunk)
+            audio_ids = [ctx.audio_id for ctx in chunk]
+            metadata = {
+                "transcription_ids": [str(ctx.transcription_id) for ctx in chunk],
+                "chunk_size": len(chunk),
+            }
+
+            try:
+                response_text, response_meta = await self.call_vllm(
+                    prompt,
+                    pass_label="smoothing",
+                    audio_file_ids=audio_ids,
+                    extra_metadata=metadata,
+                )
+                latency_ms = (response_meta or {}).get("latency_ms")
+                payload = json.loads(response_text)
+            except Exception as exc:
+                logger.warning("transcript_smoothing_failed", error=str(exc))
+                continue
+
+            entries = payload.get("smoothed") or payload.get("transcripts") or []
+            updated = await self._persist_smoothed_transcripts(entries, latency_ms=latency_ms)
+            if not updated:
+                continue
+            logger.info(
+                "transcript_smoothing_applied",
+                chunk=len(updated),
+                transcription_ids=[str(key) for key in updated.keys()],
+            )
+            for ctx in chunk:
+                result = updated.get(ctx.transcription_id)
+                if not result:
+                    continue
+                ctx.smoothed_text = result.get("smoothed_text")
+                ctx.smoothed_metadata = result.get("smoothed_metadata")
+                ctx.smoothed_at = result.get("smoothed_at")
+
+    async def call_vllm(
+        self,
+        prompt: str,
+        *,
+        pass_label: str = "analysis",
+        audio_file_ids: Sequence[uuid.UUID] | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Call the vLLM server with automatic loopback fallback and deep logging."""
 
         def candidate_urls() -> list[str]:
             urls = [self.vllm_settings.base_url.rstrip("/")]
-            # Try loopback as a safety net when the primary IP is unreachable.
             fallback = "http://127.0.0.1:8001"
             if fallback not in urls:
                 urls.append(fallback)
@@ -487,17 +684,28 @@ class TranscriptAnalyzer:
             "Content-Type": "application/json",
         }
 
+        gpu_snapshot = await self._sample_gpu_utilization()
         errors: list[tuple[str, str]] = []
-        for endpoint in candidate_urls():
+        endpoints = candidate_urls()
+        for attempt, endpoint in enumerate(endpoints, start=1):
             try:
                 start_time = time.perf_counter()
                 response = await self.http_client.post(endpoint, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
                 latency_ms = int((time.perf_counter() - start_time) * 1000)
+                usage = data.get("usage") or {}
+                prompt_tokens = self._extract_usage_value(usage, ("prompt_tokens", "input_tokens"))
+                completion_tokens = self._extract_usage_value(usage, ("completion_tokens", "output_tokens"))
+                total_tokens = self._extract_usage_value(usage, ("total_tokens",)) or (
+                    (prompt_tokens or 0) + (completion_tokens or 0)
+                    if prompt_tokens is not None and completion_tokens is not None
+                    else None
+                )
+                content = data["choices"][0]["message"]["content"]
                 meta = {
                     "model": data.get("model"),
-                    "usage": data.get("usage"),
+                    "usage": usage,
                     "latency_ms": latency_ms,
                 }
                 await self._record_ai_pass_metric(
@@ -505,19 +713,87 @@ class TranscriptAnalyzer:
                     pass_label=pass_label,
                     latency_ms=latency_ms,
                     success=True,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
                 )
-                return data["choices"][0]["message"]["content"], meta
+                await self._log_ai_run(
+                    backend="vllm",
+                    model=data.get("model") or self.vllm_settings.model,
+                    pass_label=pass_label,
+                    prompt_text=prompt,
+                    response_text=content,
+                    success=True,
+                    latency_ms=latency_ms,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    audio_file_ids=audio_file_ids,
+                    metadata={
+                        **(extra_metadata or {}),
+                        "endpoint": endpoint,
+                        "attempt": attempt,
+                        "usage": usage,
+                    },
+                    gpu_utilization_pct=gpu_snapshot,
+                )
+                return content, meta
             except httpx.ConnectError as exc:  # pragma: no cover - network heavy
-                errors.append((endpoint, str(exc)))
+                error_msg = str(exc)
+                errors.append((endpoint, error_msg))
                 logger.warning(
                     "vllm_call_attempt_failed",
                     base_url=endpoint,
-                    error=str(exc),
+                    error=error_msg,
                     prompt_size=len(prompt),
+                )
+                await self._log_ai_run(
+                    backend="vllm",
+                    model=self.vllm_settings.model,
+                    pass_label=pass_label,
+                    prompt_text=prompt,
+                    response_text=None,
+                    success=False,
+                    latency_ms=None,
+                    audio_file_ids=audio_file_ids,
+                    metadata={
+                        **(extra_metadata or {}),
+                        "endpoint": endpoint,
+                        "attempt": attempt,
+                        "failure": "connect_error",
+                    },
+                    error_message=error_msg,
+                    gpu_utilization_pct=gpu_snapshot,
                 )
                 continue
             except Exception as exc:  # pragma: no cover - network heavy
-                logger.error("vllm_call_failed", base_url=endpoint, error=str(exc))
+                error_msg = str(exc)
+                logger.error("vllm_call_failed", base_url=endpoint, error=error_msg)
+                await self._log_ai_run(
+                    backend="vllm",
+                    model=self.vllm_settings.model,
+                    pass_label=pass_label,
+                    prompt_text=prompt,
+                    response_text=None,
+                    success=False,
+                    latency_ms=None,
+                    audio_file_ids=audio_file_ids,
+                    metadata={
+                        **(extra_metadata or {}),
+                        "endpoint": endpoint,
+                        "attempt": attempt,
+                        "failure": "exception",
+                    },
+                    error_message=error_msg,
+                    gpu_utilization_pct=gpu_snapshot,
+                )
+                await self._record_ai_pass_metric(
+                    backend="vllm",
+                    pass_label=pass_label,
+                    latency_ms=None,
+                    success=False,
+                    error=error_msg,
+                )
                 raise
 
         await self._record_ai_pass_metric(
@@ -526,6 +802,19 @@ class TranscriptAnalyzer:
             latency_ms=None,
             success=False,
             error="all_endpoints_failed",
+        )
+        await self._log_ai_run(
+            backend="vllm",
+            model=self.vllm_settings.model,
+            pass_label=pass_label,
+            prompt_text=prompt,
+            response_text=None,
+            success=False,
+            latency_ms=None,
+            audio_file_ids=audio_file_ids,
+            metadata={**(extra_metadata or {}), "endpoints": endpoints, "failure": "exhausted"},
+            error_message="all_endpoints_failed",
+            gpu_utilization_pct=gpu_snapshot,
         )
         logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
         raise RuntimeError("All vLLM endpoints failed")
@@ -881,7 +1170,11 @@ If you need more context to finish a net, include a top-level
         prompt = self._build_profile_prompt(profile_context, window_hours)
 
         try:
-            response_text, response_meta = await self.call_vllm(prompt, pass_label="profile_refresh")
+            response_text, response_meta = await self.call_vllm(
+                prompt,
+                pass_label="profile_refresh",
+                extra_metadata={"profile_count": len(stats)},
+            )
         except Exception as exc:  # pragma: no cover - vLLM connectivity
             logger.warning("profile_refresh_call_failed", error=str(exc))
             return False
@@ -1401,8 +1694,18 @@ If you need more context to finish a net, include a top-level
             f"\nINPUT:\n{validator_prompt}"
         )
 
+        audio_ids = [ctx.audio_id for ctx in contexts]
+
         try:
-            response_text, _ = await self.call_vllm(prompt, pass_label="validator")
+            response_text, _ = await self.call_vllm(
+                prompt,
+                pass_label="validator",
+                audio_file_ids=audio_ids,
+                extra_metadata={
+                    "claimed_nets": len(nets or []),
+                    "context_digest_count": len(contexts),
+                },
+            )
             result = json.loads(response_text)
         except Exception as exc:  # pragma: no cover - validation best-effort
             logger.warning("analysis_net_validation_failed", error=str(exc))
@@ -1521,6 +1824,9 @@ If you need more context to finish a net, include a top-level
         latency_ms: int | None,
         success: bool,
         error: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
     ) -> None:
         async with get_session() as session:
             metric = ProcessingMetric(
@@ -1532,10 +1838,67 @@ If you need more context to finish a net, include a top-level
                 metadata_={
                     "pass_label": pass_label,
                     "backend": backend,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
                 },
             )
             session.add(metric)
             await session.flush()
+
+    async def _log_ai_run(
+        self,
+        *,
+        backend: str,
+        model: str | None,
+        pass_label: str,
+        prompt_text: str,
+        response_text: str | None,
+        success: bool,
+        latency_ms: int | None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        audio_file_ids: Sequence[uuid.UUID] | None = None,
+        metadata: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        gpu_utilization_pct: float | None = None,
+    ) -> None:
+        async with get_session() as session:
+            entry = AiRunLog(
+                backend=backend,
+                model=model,
+                pass_label=pass_label,
+                success=success,
+                error_message=error_message,
+                prompt_text=prompt_text,
+                response_text=response_text,
+                prompt_characters=len(prompt_text or ""),
+                response_characters=len(response_text) if response_text else None,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                latency_ms=latency_ms,
+                gpu_utilization_pct=gpu_utilization_pct,
+                audio_file_ids=[str(aid) for aid in audio_file_ids] if audio_file_ids else None,
+                metadata_=metadata or {},
+            )
+            session.add(entry)
+            await session.flush()
+
+    @staticmethod
+    def _extract_usage_value(usage: dict[str, Any] | None, keys: Sequence[str]) -> int | None:
+        if not usage:
+            return None
+        for key in keys:
+            value = usage.get(key)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     def _resolve_openai_client(self) -> AsyncOpenAI | None:
         api_key = (
@@ -1593,6 +1956,8 @@ If you need more context to finish a net, include a top-level
             f"\nCONTEXT START\n{context_block}\nCONTEXT END"
         )
 
+        audio_ids = [ctx.audio_id for ctx in contexts]
+
         try:
             start = time.perf_counter()
             response = await client.responses.create(
@@ -1614,14 +1979,34 @@ If you need more context to finish a net, include a top-level
                 response_format={"type": "json_object"},
             )
             latency_ms = int((time.perf_counter() - start) * 1000)
+            usage = getattr(response, "usage", None) or {}
+            prompt_tokens = self._extract_usage_value(usage, ("prompt_tokens", "input_tokens"))
+            completion_tokens = self._extract_usage_value(usage, ("completion_tokens", "output_tokens"))
+            total_tokens = self._extract_usage_value(usage, ("total_tokens",))
             await self._record_ai_pass_metric(
                 backend="openai",
                 pass_label="crosscheck",
                 latency_ms=latency_ms,
                 success=True,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
             )
         except Exception as exc:  # pragma: no cover - network variability
-            logger.warning("analysis_crosscheck_failed", error=str(exc))
+            error_msg = str(exc)
+            logger.warning("analysis_crosscheck_failed", error=error_msg)
+            await self._log_ai_run(
+                backend="openai",
+                model=self.analysis_settings.openai_responses_model,
+                pass_label="crosscheck",
+                prompt_text=prompt,
+                response_text=None,
+                success=False,
+                latency_ms=None,
+                audio_file_ids=audio_ids,
+                metadata={"stage": "crosscheck"},
+                error_message=error_msg,
+            )
             return None
 
         text_output = self._extract_responses_text(response)
@@ -1634,17 +2019,32 @@ If you need more context to finish a net, include a top-level
             logger.warning("analysis_crosscheck_bad_json", preview=text_output[:120])
             return None
 
-        usage = getattr(response, "usage", None) or {}
-        tokens = usage.get("total_tokens") or usage.get("output_tokens")
         await self._record_analysis_audit(
             contexts,
             backend="openai_responses",
             pass_type="crosscheck",
             latency_ms=latency_ms,
-            response_tokens=tokens,
+            response_tokens=total_tokens or usage.get("output_tokens"),
             observations={
                 "nets_detected": len(payload.get("nets") or []),
                 "original_nets": len(original_payload.get("nets") or []),
+            },
+        )
+        await self._log_ai_run(
+            backend="openai",
+            model=self.analysis_settings.openai_responses_model,
+            pass_label="crosscheck",
+            prompt_text=prompt,
+            response_text=text_output,
+            success=True,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            audio_file_ids=audio_ids,
+            metadata={
+                "stage": "crosscheck",
+                "usage": usage,
             },
         )
         return payload
@@ -1672,6 +2072,9 @@ If you need more context to finish a net, include a top-level
                 if not contexts:
                     return False
 
+        if contexts and self.analysis_settings.transcript_smoothing_enabled:
+            await self._smooth_context_transcripts(contexts)
+
         extension_attempts = 0
         payload: dict[str, Any] | None = None
         context_block = ""
@@ -1693,7 +2096,15 @@ If you need more context to finish a net, include a top-level
 
             try:
                 pass_label = contexts[0].pass_type if contexts else "analysis"
-                response_text, response_meta = await self.call_vllm(prompt, pass_label=pass_label)
+                response_text, response_meta = await self.call_vllm(
+                    prompt,
+                    pass_label=pass_label,
+                    audio_file_ids=[ctx.audio_id for ctx in included],
+                    extra_metadata={
+                        "context_count": len(included),
+                        "extension_attempts": extension_attempts,
+                    },
+                )
                 vllm_latency_ms = (response_meta or {}).get("latency_ms")
                 payload = json.loads(response_text)
                 usage = (response_meta or {}).get("usage") or {}

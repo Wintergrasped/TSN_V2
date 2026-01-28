@@ -3,7 +3,7 @@ Health check and metrics endpoint for monitoring.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -20,7 +20,7 @@ from starlette.responses import Response
 from tsn_common.config import get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
-from tsn_common.models import AudioFile, AudioFileState, SystemHealth
+from tsn_common.models import AiRunLog, AudioFile, AudioFileState, GpuUtilizationSample, SystemHealth
 
 logger = get_logger(__name__)
 
@@ -72,6 +72,10 @@ class MetricsResponse(BaseModel):
     total_nets: int
     processing_rates: dict[str, float]
     error_rate: float
+    ai_runs_total: int
+    ai_tokens_total: int
+    gpu_samples_last_hour: int
+    gpu_saturation_percent_last_hour: float
 
 
 start_time = datetime.now(timezone.utc)
@@ -127,7 +131,7 @@ async def metrics_json():
     """
     try:
         async with get_session() as session:
-            from sqlalchemy import func, select
+            from sqlalchemy import case, func, select
             from tsn_common.models import Callsign, NetSession
             
             # Files by state
@@ -165,8 +169,41 @@ async def metrics_json():
                     AudioFileState.FAILED_ANALYSIS.value,
                 ]
             )
-            
+
             error_rate = (failed_files / total_files * 100) if total_files > 0 else 0.0
+
+            # AI run stats
+            ai_stmt = await session.execute(
+                select(
+                    func.count(AiRunLog.id),
+                    func.coalesce(func.sum(AiRunLog.total_tokens), 0),
+                )
+            )
+            ai_runs_total, ai_tokens_total = ai_stmt.one()
+            ai_runs_total = int(ai_runs_total or 0)
+            ai_tokens_total = int(ai_tokens_total or 0)
+
+            # GPU utilization lookback (last hour)
+            window_start = datetime.now(timezone.utc) - timedelta(hours=1)
+            gpu_stmt = await session.execute(
+                select(
+                    func.count(GpuUtilizationSample.id),
+                    func.coalesce(
+                        func.sum(
+                            case((GpuUtilizationSample.is_saturated.is_(True), 1), else_=0)
+                        ),
+                        0,
+                    ),
+                ).where(GpuUtilizationSample.created_at >= window_start)
+            )
+            gpu_sample_count, gpu_saturated_count = gpu_stmt.one()
+            gpu_sample_count = int(gpu_sample_count or 0)
+            gpu_saturated_count = int(gpu_saturated_count or 0)
+            gpu_saturation_percent = (
+                (gpu_saturated_count / gpu_sample_count) * 100
+                if gpu_sample_count
+                else 0.0
+            )
         
         return MetricsResponse(
             files_by_state=files_by_state,
@@ -174,6 +211,10 @@ async def metrics_json():
             total_nets=total_nets,
             processing_rates={},  # TODO: Calculate from processing metrics
             error_rate=error_rate,
+            ai_runs_total=ai_runs_total,
+            ai_tokens_total=ai_tokens_total,
+            gpu_samples_last_hour=gpu_sample_count,
+            gpu_saturation_percent_last_hour=gpu_saturation_percent,
         )
         
     except Exception as e:
