@@ -127,6 +127,17 @@ class IngestionService:
                     metadata["filename_node_id"] = filename_meta["node_id"]
                 metadata["filename_format"] = filename_meta.get("format", "unknown")
                 metadata["archive_ingest"] = filename_meta.get("is_archive", False)
+
+                filename_node_id = metadata.get("filename_node_id")
+                if filename_node_id and filename_node_id != inferred_node_id:
+                    if node_id not in {"unknown", filename_node_id}:
+                        logger.info(
+                            "node_id_overridden_by_filename",
+                            filename=file_path.name,
+                            requested_node=node_id,
+                            filename_node=filename_node_id,
+                        )
+                    inferred_node_id = filename_node_id
                 
                 # Move to storage (handle cross-device moves)
                 storage_path = self.storage_dir / file_path.name

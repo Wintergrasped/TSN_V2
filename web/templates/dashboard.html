@@ -1,6 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Activity{% endblock %}
 {% block content %}
+<section class="node-filter">
+    <form class="filter-bar" method="get">
+        <label for="node-select">Node Scope</label>
+        <select id="node-select" name="node" onchange="this.form.submit()">
+            {% for option in payload.node_options %}
+                {% set is_selected = option.value == payload.node_filter %}
+                <option value="{{ option.value }}" {% if is_selected %}selected{% endif %} {% if option.disabled and not is_selected %}disabled{% endif %}>
+                    {{ option.label }}
+                </option>
+            {% endfor %}
+        </select>
+        {% if payload.node_filter != 'all' %}
+            <a class="reset-link" href="/">Reset</a>
+        {% endif %}
+    </form>
+</section>
 <section class="stats-grid">
     {% for card in payload.stats_cards %}
         <article class="stat-card">

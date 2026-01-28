@@ -88,7 +88,9 @@ def _parse_timestamp(ts: str) -> datetime | None:
         return None
 
 
-_NEW_FILENAME_PATTERN = re.compile(r"^(?P<node>[A-Za-z0-9\-]+)_(?P<ts>\d{14})$")
+_NEW_FILENAME_PATTERN = re.compile(
+    r"^(?P<node>[A-Za-z0-9\-]+)_(?P<ts>\d{14})(?:[._-].+)?$"
+)
 _LEGACY_PATTERN = re.compile(r"^(?P<ts>\d{14})$")
 _UNDERSCORE_PATTERN = re.compile(r"^(?P<date>\d{8})_(?P<time>\d{6})")
 

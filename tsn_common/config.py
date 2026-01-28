@@ -213,6 +213,18 @@ class AnalysisSettings(BaseSettings):
         default=31500,
         description="Character budget to target when GPU is idle (keeps 32k context saturated)",
     )
+    overdrive_window_hours: int = Field(
+        default=168,
+        description="How far back (hours) to pull completed audio for GPU overdrive re-analysis",
+    )
+    overdrive_batch_size: int = Field(
+        default=6,
+        description="How many completed files to requeue during GPU overdrive cycles",
+    )
+    overdrive_cooldown_hours: int = Field(
+        default=12,
+        description="Minimum hours between overdrive re-analysis passes per audio file",
+    )
     profile_refresh_hours: int = Field(
         default=12,
         description="Minimum hours before a callsign profile becomes eligible for refresh",

@@ -22,10 +22,11 @@ router = APIRouter()
 @router.get("/", response_class=HTMLResponse)
 async def landing_page(
     request: Request,
+    node: str | None = None,
     session=Depends(get_db_session),
     current_user=Depends(maybe_current_user),
 ):
-    payload = await get_dashboard_payload(session)
+    payload = await get_dashboard_payload(session, node_scope=node)
     return templates.TemplateResponse(
         "dashboard.html",
         {

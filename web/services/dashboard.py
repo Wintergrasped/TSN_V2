@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tsn_common.logging import get_logger
 from tsn_common.models.audio import AudioFile
-from tsn_common.models.callsign import Callsign, ValidationMethod
+from tsn_common.models.callsign import Callsign, CallsignLog, ValidationMethod
 from tsn_common.models.club import ClubProfile
 from tsn_common.models.net import NetSession
 from tsn_common.models.support import ProcessingMetric, SystemHealth
@@ -49,6 +49,30 @@ _summary_cache: dict[str, Any] = {
     "data": _DEFAULT_AI_SECTIONS.copy(),
 }
 _summary_task: asyncio.Task | None = None
+
+_PUBLIC_NODE_IDS = ("unknown", "public")
+
+
+def normalize_node_scope(raw: str | None) -> str:
+    if raw is None:
+        return "all"
+    trimmed = raw.strip()
+    if not trimmed:
+        return "all"
+    lowered = trimmed.lower()
+    if lowered == "all":
+        return "all"
+    if lowered == "public":
+        return "public"
+    return trimmed
+
+
+def _node_clause(node_scope: str):
+    if node_scope == "all":
+        return None
+    if node_scope == "public":
+        return AudioFile.node_id.in_(_PUBLIC_NODE_IDS)
+    return AudioFile.node_id == node_scope
 
 
 def _club_alias_key(club_names: list[str]) -> str:
@@ -130,6 +154,32 @@ def _schedule_summary_refresh(snapshot: dict[str, Any]) -> None:
     _summary_task.add_done_callback(_log_task_failure("dashboard_ai"))
 
 
+async def get_node_selector_options(session: AsyncSession) -> list[dict[str, str]]:
+    stmt = (
+        select(AudioFile.node_id, func.max(AudioFile.created_at).label("last_seen"))
+        .group_by(AudioFile.node_id)
+        .order_by(func.max(AudioFile.created_at).desc())
+    )
+    result = await session.execute(stmt)
+    nodes: list[str] = []
+    has_public = False
+    for node_id, _ in result.all():
+        if not node_id:
+            continue
+        if node_id in _PUBLIC_NODE_IDS:
+            has_public = True
+        else:
+            nodes.append(node_id)
+
+    nodes = sorted(set(nodes))
+    options: list[dict[str, Any]] = [
+        {"value": "all", "label": "All Nodes", "disabled": False},
+        {"value": "public", "label": "Public (unknown)", "disabled": not has_public},
+    ]
+    options.extend({"value": node, "label": f"Node {node}", "disabled": False} for node in nodes)
+    return options
+
+
 def _log_task_failure(label: str):
     def _handler(task: asyncio.Task) -> None:
         try:
@@ -142,13 +192,15 @@ def _log_task_failure(label: str):
     return _handler
 
 
-async def get_audio_queue_snapshot(session: AsyncSession) -> dict:
+async def get_audio_queue_snapshot(session: AsyncSession, node_scope: str = "all") -> dict:
     """Return counts for each AudioFile state and totals."""
 
     state_counts: dict[str, int] = defaultdict(int)
-    result = await session.execute(
-        select(AudioFile.state, func.count()).group_by(AudioFile.state)
-    )
+    clause = _node_clause(node_scope)
+    stmt = select(AudioFile.state, func.count()).group_by(AudioFile.state)
+    if clause is not None:
+        stmt = stmt.where(clause)
+    result = await session.execute(stmt)
     for state, count in result:
         state_counts[state.value if hasattr(state, "value") else state] = count
 
@@ -159,34 +211,84 @@ async def get_audio_queue_snapshot(session: AsyncSession) -> dict:
     }
 
 
-async def get_recent_callsigns(session: AsyncSession, limit: int = 25) -> list[dict]:
-    priority = case((Callsign.validation_method == ValidationMethod.QRZ, 0), else_=1)
+async def get_recent_callsigns(
+    session: AsyncSession,
+    limit: int = 25,
+    node_scope: str = "all",
+) -> list[dict]:
+    clause = _node_clause(node_scope)
+    if clause is None:
+        priority = case((Callsign.validation_method == ValidationMethod.QRZ, 0), else_=1)
+        stmt = (
+            select(Callsign)
+            .where(Callsign.validated.is_(True))
+            .order_by(priority, Callsign.last_seen.desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        records = [
+            {
+                "callsign": c.callsign,
+                "validated": c.validated,
+                "validation_method": c.validation_method.value if c.validation_method else None,
+                "first_seen": c.first_seen.isoformat(),
+                "last_seen": c.last_seen.isoformat(),
+                "seen_count": c.seen_count,
+            }
+            for c in result.scalars().all()
+        ]
+        return records
+
+    activity_subquery = (
+        select(
+            CallsignLog.callsign_id.label("callsign_id"),
+            func.max(CallsignLog.detected_at).label("last_seen"),
+            func.count(CallsignLog.id).label("segment_count"),
+        )
+        .join(Transcription, CallsignLog.transcription_id == Transcription.id)
+        .join(AudioFile, Transcription.audio_file_id == AudioFile.id)
+        .where(clause)
+        .group_by(CallsignLog.callsign_id)
+        .subquery()
+    )
+
     stmt = (
-        select(Callsign)
-        .where(Callsign.validated.is_(True))
-        .order_by(priority, Callsign.last_seen.desc())
+        select(Callsign, activity_subquery.c.last_seen, activity_subquery.c.segment_count)
+        .join(activity_subquery, activity_subquery.c.callsign_id == Callsign.id)
+        .order_by(activity_subquery.c.last_seen.desc())
         .limit(limit)
     )
     result = await session.execute(stmt)
-    return [
-        {
-            "callsign": c.callsign,
-            "validated": c.validated,
-            "validation_method": c.validation_method.value if c.validation_method else None,
-            "first_seen": c.first_seen.isoformat(),
-            "last_seen": c.last_seen.isoformat(),
-            "seen_count": c.seen_count,
-        }
-        for c in result.scalars().all()
-    ]
+
+    records: list[dict] = []
+    for callsign, last_seen, segment_count in result.all():
+        records.append(
+            {
+                "callsign": callsign.callsign,
+                "validated": callsign.validated,
+                "validation_method": callsign.validation_method.value if callsign.validation_method else None,
+                "first_seen": callsign.first_seen.isoformat(),
+                "last_seen": (last_seen or callsign.last_seen).isoformat() if last_seen or callsign.last_seen else None,
+                "seen_count": int(segment_count or 0),
+            }
+        )
+    return records
 
 
-async def get_recent_transcriptions(session: AsyncSession, limit: int = 10) -> list[dict]:
+async def get_recent_transcriptions(
+    session: AsyncSession,
+    limit: int = 10,
+    node_scope: str = "all",
+) -> list[dict]:
+    clause = _node_clause(node_scope)
     stmt = (
         select(Transcription)
+        .join(AudioFile, Transcription.audio_file_id == AudioFile.id)
         .order_by(Transcription.created_at.desc())
         .limit(limit)
     )
+    if clause is not None:
+        stmt = stmt.where(clause)
     result = await session.execute(stmt)
     return [
         {
@@ -200,12 +302,20 @@ async def get_recent_transcriptions(session: AsyncSession, limit: int = 10) -> l
     ]
 
 
-async def get_recent_nets(session: AsyncSession, limit: int = 10) -> list[dict]:
+async def get_recent_nets(
+    session: AsyncSession,
+    limit: int = 10,
+    node_scope: str = "all",
+) -> list[dict]:
+    clause = _node_clause(node_scope)
     stmt = (
         select(NetSession)
+        .join(AudioFile, NetSession.audio_file_id == AudioFile.id)
         .order_by(NetSession.start_time.desc())
         .limit(limit)
     )
+    if clause is not None:
+        stmt = stmt.where(clause)
     result = await session.execute(stmt)
     return [
         {
@@ -282,33 +392,71 @@ async def get_system_health(session: AsyncSession) -> list[dict]:
     ]
 
 
-async def get_global_stats(session: AsyncSession) -> dict[str, int]:
+async def get_global_stats(session: AsyncSession, node_scope: str = "all") -> dict[str, int]:
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(days=7)
 
-    ai_stages = ("ai_pass_vllm", "ai_pass_openai")
+    ai_stage_filter = ProcessingMetric.stage.like("ai_pass_%")
 
-    total_callsigns = await session.scalar(select(func.count(Callsign.id))) or 0
-    validated_callsigns = await session.scalar(
-        select(func.count(Callsign.id)).where(Callsign.validated.is_(True))
-    ) or 0
-    recent_callsigns = await session.scalar(
-        select(func.count(Callsign.id)).where(Callsign.last_seen >= recent_cutoff)
-    ) or 0
+    node_clause = _node_clause(node_scope)
 
-    audio_total = await session.scalar(select(func.count(AudioFile.id))) or 0
-    audio_recent = await session.scalar(
-        select(func.count(AudioFile.id)).where(AudioFile.created_at >= recent_cutoff)
-    ) or 0
-    transcript_total = await session.scalar(select(func.count(Transcription.id))) or 0
-    net_total = await session.scalar(select(func.count(NetSession.id))) or 0
+    if node_clause is None:
+        total_callsigns = await session.scalar(select(func.count(Callsign.id))) or 0
+        validated_callsigns = await session.scalar(
+            select(func.count(Callsign.id)).where(Callsign.validated.is_(True))
+        ) or 0
+        recent_callsigns = await session.scalar(
+            select(func.count(Callsign.id)).where(Callsign.last_seen >= recent_cutoff)
+        ) or 0
+    else:
+        callsign_activity = (
+            select(CallsignLog.callsign_id.label("callsign_id"))
+            .join(Transcription, CallsignLog.transcription_id == Transcription.id)
+            .join(AudioFile, Transcription.audio_file_id == AudioFile.id)
+            .where(node_clause)
+            .group_by(CallsignLog.callsign_id)
+            .subquery()
+        )
+        total_callsigns = await session.scalar(
+            select(func.count(callsign_activity.c.callsign_id))
+        ) or 0
+        validated_callsigns = await session.scalar(
+            select(func.count(Callsign.id))
+            .join(callsign_activity, callsign_activity.c.callsign_id == Callsign.id)
+            .where(Callsign.validated.is_(True))
+        ) or 0
+        recent_callsigns = await session.scalar(
+            select(func.count(Callsign.id))
+            .join(callsign_activity, callsign_activity.c.callsign_id == Callsign.id)
+            .where(Callsign.last_seen >= recent_cutoff)
+        ) or 0
+
+    audio_stmt = select(func.count(AudioFile.id))
+    if node_clause is not None:
+        audio_stmt = audio_stmt.where(node_clause)
+    audio_total = await session.scalar(audio_stmt) or 0
+
+    audio_recent_stmt = select(func.count(AudioFile.id)).where(AudioFile.created_at >= recent_cutoff)
+    if node_clause is not None:
+        audio_recent_stmt = audio_recent_stmt.where(node_clause)
+    audio_recent = await session.scalar(audio_recent_stmt) or 0
+
+    transcript_stmt = select(func.count(Transcription.id)).join(AudioFile, Transcription.audio_file_id == AudioFile.id)
+    if node_clause is not None:
+        transcript_stmt = transcript_stmt.where(node_clause)
+    transcript_total = await session.scalar(transcript_stmt) or 0
+
+    net_stmt = select(func.count(NetSession.id)).join(AudioFile, NetSession.audio_file_id == AudioFile.id)
+    if node_clause is not None:
+        net_stmt = net_stmt.where(node_clause)
+    net_total = await session.scalar(net_stmt) or 0
 
     ai_passes_total = await session.scalar(
-        select(func.count(ProcessingMetric.id)).where(ProcessingMetric.stage.in_(ai_stages))
+        select(func.count(ProcessingMetric.id)).where(ai_stage_filter)
     ) or 0
     ai_passes_recent = await session.scalar(
         select(func.count(ProcessingMetric.id)).where(
-            ProcessingMetric.stage.in_(ai_stages),
+            ai_stage_filter,
             ProcessingMetric.timestamp >= recent_cutoff,
         )
     ) or 0
@@ -326,17 +474,20 @@ async def get_global_stats(session: AsyncSession) -> dict[str, int]:
     }
 
 
-async def get_dashboard_payload(session: AsyncSession) -> dict:
+async def get_dashboard_payload(session: AsyncSession, node_scope: str | None = None) -> dict:
     """Aggregate everything the landing page requires."""
 
-    queue = await get_audio_queue_snapshot(session)
-    callsigns = await get_recent_callsigns(session)
-    transcriptions = await get_recent_transcriptions(session)
-    nets = await get_recent_nets(session)
+    resolved_scope = normalize_node_scope(node_scope)
+
+    queue = await get_audio_queue_snapshot(session, resolved_scope)
+    callsigns = await get_recent_callsigns(session, node_scope=resolved_scope)
+    transcriptions = await get_recent_transcriptions(session, node_scope=resolved_scope)
+    nets = await get_recent_nets(session, node_scope=resolved_scope)
     trends = await get_trend_highlights(session)
     clubs = await get_club_profiles(session)
     health = await get_system_health(session)
-    stats = await get_global_stats(session)
+    stats = await get_global_stats(session, node_scope=resolved_scope)
+    node_options = await get_node_selector_options(session)
 
     club_names = [club["name"] for club in clubs if club.get("name")]
     alias_key = _club_alias_key(club_names)
@@ -411,4 +562,6 @@ async def get_dashboard_payload(session: AsyncSession) -> dict:
         "ai_summaries": ai_sections,
         "stats": stats,
         "stats_cards": stats_cards,
+        "node_filter": resolved_scope,
+        "node_options": node_options,
     }

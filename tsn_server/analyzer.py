@@ -438,6 +438,68 @@ class TranscriptAnalyzer:
             logger.info("analysis_refinement_batch_enqueued", count=queued)
             return queued
 
+    async def _queue_overdrive_work(self) -> int:
+        """Force completed audio back through analysis when the GPU is idle."""
+
+        window_hours = max(1, self.analysis_settings.overdrive_window_hours)
+        batch_target = max(1, self.analysis_settings.overdrive_batch_size)
+        cooldown_hours = max(1, self.analysis_settings.overdrive_cooldown_hours)
+        window_start = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        cooldown_delta = timedelta(hours=cooldown_hours)
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(AudioFile)
+                .where(
+                    AudioFile.state == AudioFileState.COMPLETE,
+                    AudioFile.created_at >= window_start,
+                )
+                .order_by(AudioFile.created_at.desc())
+                .limit(batch_target * 6)
+                .with_for_update(skip_locked=True)
+            )
+            records = result.scalars().all()
+            if not records:
+                return 0
+
+            now = datetime.now(timezone.utc)
+            queued = 0
+            for record in records:
+                metadata = dict(record.metadata_ or {})
+                last_run = self._parse_iso_datetime(metadata.get("overdrive_last_run"))
+                if last_run and (now - last_run) < cooldown_delta:
+                    continue
+
+                history = list(metadata.get("overdrive_history") or [])
+                history.append({"queued_at": now.isoformat(), "reason": "gpu_keepalive"})
+                metadata.update(
+                    {
+                        "analysis_mode": "overdrive",
+                        "pending_refinement": True,
+                        "refinement_reason": "gpu_overdrive",
+                        "overdrive_last_run": now.isoformat(),
+                        "overdrive_history": history[-10:],
+                    }
+                )
+
+                record.metadata_ = metadata
+                record.state = AudioFileState.QUEUED_ANALYSIS
+                queued += 1
+                if queued >= batch_target:
+                    break
+
+            if not queued:
+                return 0
+
+            await session.flush()
+            logger.info(
+                "analysis_overdrive_batch_enqueued",
+                count=queued,
+                window_hours=window_hours,
+                cooldown_hours=cooldown_hours,
+            )
+            return queued
+
     async def _maybe_queue_gpu_backfill(self) -> str | None:
         """Kick off additional work (refinements or profiles) when the GPU is idle."""
 
@@ -455,6 +517,10 @@ class TranscriptAnalyzer:
         refreshed = await self._run_profile_refresh()
         if refreshed:
             return "profile_refresh"
+
+        overdrive = await self._queue_overdrive_work()
+        if overdrive:
+            return "overdrive_requeue"
 
         return None
 
@@ -1310,6 +1376,18 @@ If you need more context to finish a net, include a top-level
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _parse_iso_datetime(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
     async def _get_or_create_profile(self, session, callsign_id: uuid.UUID) -> CallsignProfile:
         result = await session.execute(
             select(CallsignProfile).where(CallsignProfile.callsign_id == callsign_id)
@@ -2123,7 +2201,7 @@ If you need more context to finish a net, include a top-level
                 gpu_job = await self._maybe_queue_gpu_backfill()
                 if gpu_job == "profile_refresh":
                     return True
-                if gpu_job == "audio_requeued":
+                if gpu_job in {"audio_requeued", "overdrive_requeue"}:
                     contexts = await self._reserve_batch()
                 if not contexts:
                     return False
