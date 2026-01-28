@@ -576,8 +576,11 @@ class TranscriptAnalyzer:
         Returns the number of work items queued/completed.
         """
         if not self.analysis_settings.aggressive_backfill_enabled:
+            logger.debug("aggressive_backfill_disabled")
             return 0
 
+        logger.info("aggressive_backfill_starting", chain_limit=self.analysis_settings.idle_work_chain_limit)
+        
         total_work = 0
         chain_limit = max(1, self.analysis_settings.idle_work_chain_limit)
 
@@ -634,6 +637,17 @@ class TranscriptAnalyzer:
                 overdrive=overdrive_queued,
                 preemptive=preemptive,
                 club=club_work,
+            )
+        else:
+            logger.info(
+                "aggressive_backfill_no_work_found",
+                checked_failed=True,
+                checked_smoothing=True,
+                checked_refinement=True,
+                checked_profiles=True,
+                checked_overdrive=True,
+                checked_preemptive=True,
+                checked_clubs=True,
             )
 
         return total_work
@@ -2634,6 +2648,16 @@ If you need more context to finish a net, include a top-level
     async def run_worker(self, worker_id: int = 0) -> None:
         logger.info("analysis_worker_started", worker_id=worker_id)
         
+        # Immediately log configuration
+        logger.info(
+            "analysis_worker_config",
+            worker_id=worker_id,
+            idle_poll_sec=self.analysis_settings.idle_poll_interval_sec,
+            aggressive_backfill=self.analysis_settings.aggressive_backfill_enabled,
+            chain_limit=self.analysis_settings.idle_work_chain_limit,
+            gpu_watch=self.analysis_settings.gpu_watch_enabled,
+        )
+        
         # Worker statistics
         iterations = 0
         work_cycles = 0
@@ -2683,6 +2707,16 @@ If you need more context to finish a net, include a top-level
                     )
                     
                     last_stats_log = now
+                
+                # Log every 100 iterations for visibility during startup
+                if iterations % 100 == 0:
+                    logger.debug(
+                        "analysis_worker_heartbeat",
+                        worker_id=worker_id,
+                        iterations=iterations,
+                        work_cycles=work_cycles,
+                        idle_cycles=idle_cycles,
+                    )
                     
         except asyncio.CancelledError:
             logger.info("analysis_worker_cancelled", worker_id=worker_id)
