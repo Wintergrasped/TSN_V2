@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
+
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -102,7 +104,33 @@ async def fetch_callsign_profile(session, callsign: str) -> dict | None:
         ],
     }
 
-    payload["ai_summary"] = await summarize_callsign(record.callsign, payload)
+    # Check for cached AI summary first (performance optimization)
+    cached_summary = None
+    if profile and profile.metadata_:
+        cached_summary = profile.metadata_.get("ai_summary")
+        cache_timestamp = profile.metadata_.get("ai_summary_timestamp")
+        # Regenerate if summary is older than 7 days
+        if cached_summary and cache_timestamp:
+            from datetime import datetime, timezone, timedelta
+            cache_age = datetime.now(timezone.utc) - datetime.fromisoformat(cache_timestamp)
+            if cache_age > timedelta(days=7):
+                cached_summary = None
+    
+    if cached_summary:
+        payload["ai_summary"] = cached_summary
+    else:
+        # Generate new summary and cache it
+        new_summary = await summarize_callsign(record.callsign, payload)
+        payload["ai_summary"] = new_summary
+        
+        # Store in profile metadata for future use
+        if profile:
+            metadata = dict(profile.metadata_ or {})
+            metadata["ai_summary"] = new_summary
+            metadata["ai_summary_timestamp"] = datetime.now(timezone.utc).isoformat()
+            profile.metadata_ = metadata
+            await session.flush()
+    
     return payload
 
 

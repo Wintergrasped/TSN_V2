@@ -158,17 +158,25 @@ async def update_club_note(
 @router.get("/net-control", response_class=HTMLResponse)
 async def net_control_page(
     request: Request,
+    node_id: str | None = None,
     session=Depends(get_db_session),
     current_user=Depends(maybe_current_user),
 ):
     active = None
     sessions: list[dict] = []
     feed: list[dict] = []
+    live_callsigns: list[dict] = []
+    available_nodes: list[str] = []
     load_error = None
     try:
         active = await net_control.get_active_session(session)
         sessions = await net_control.list_sessions(session)
-        feed = await net_control.fetch_checkin_feed(session, limit=25)
+        feed = await net_control.fetch_checkin_feed(session, limit=25, node_id=node_id)
+        available_nodes = await net_control.get_available_nodes(session)
+        
+        # If there's an active net, fetch live callsigns
+        if active:
+            live_callsigns = await net_control.fetch_live_callsigns(session, limit=5, node_id=node_id)
     except SQLAlchemyError as exc:
         logger.error("net_control_page_load_failed", error=str(exc))
         load_error = "Unable to load live net data. Please try again in a moment."
@@ -180,6 +188,9 @@ async def net_control_page(
             "active_session": active,
             "sessions": sessions,
             "feed": feed,
+            "live_callsigns": live_callsigns,
+            "available_nodes": available_nodes,
+            "selected_node": node_id,
             "requires_login": current_user is None,
             "load_error": load_error,
         },

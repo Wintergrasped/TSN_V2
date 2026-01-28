@@ -11,11 +11,51 @@
     Please sign in to control nets. You can still review recent sessions and check-ins below.
 </div>
 {% endif %}
+
+<!-- Node Selection -->
+{% if available_nodes and available_nodes|length > 1 %}
+<section class="node-selector">
+    <label for="node-select">Filter by Node:</label>
+    <select id="node-select" onchange="window.location.href='?node_id=' + this.value">
+        <option value="">All Nodes</option>
+        {% for node in available_nodes %}
+            <option value="{{ node }}" {% if selected_node == node %}selected{% endif %}>{{ node }}</option>
+        {% endfor %}
+    </select>
+</section>
+{% endif %}
+
 <section class="grid">
     <article>
         <h2>Manual Net Session</h2>
         {% if active_session %}
             <p class="muted">Active since {{ active_session.started_at }} • started by {{ active_session.started_by }}</p>
+            
+            <!-- Live Callsigns Section -->
+            {% if live_callsigns %}
+            <div class="live-callsigns">
+                <h3>Last 5 Callsigns Heard</h3>
+                <ul class="callsign-list">
+                    {% for cs in live_callsigns %}
+                    <li>
+                        <span class="callsign">{{ cs.callsign }}</span>
+                        {% if cs.qrz_status == "valid" %}
+                            <span class="qrz-check valid" title="QRZ Validated">✓</span>
+                        {% elif cs.qrz_status == "valid_other" %}
+                            <span class="qrz-check other" title="Validated (not QRZ)">✓</span>
+                        {% else %}
+                            <span class="qrz-check invalid" title="Not Validated">✗</span>
+                        {% endif %}
+                        <span class="timestamp muted">{{ cs.detected_at }}</span>
+                        <span class="confidence">{{ "%.2f"|format(cs.confidence) }}</span>
+                        {% if cs.node_id %}
+                            <span class="node-badge">{{ cs.node_id }}</span>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
         {% endif %}
         {% if requires_login %}
             <p class="muted">Manual controls are limited to authenticated portal operators.</p>
@@ -60,24 +100,104 @@
     </div>
     <div class="table-wrapper">
         <table id="net-control-feed">
-            <thead><tr><th>Detected At</th><th>Callsign ID</th><th>Confidence</th><th>Context</th></tr></thead>
+            <thead><tr><th>Detected At</th><th>Callsign ID</th><th>Confidence</th><th>Context</th><th>Node</th></tr></thead>
             <tbody>
                 {% if feed %}
                 {% for row in feed %}
                     <tr>
                         <td>{{ row.detected_at }}</td>
-                        <td>{{ callsign_link(row.callsign_id) }}</td>
+                        <td>{{ row.callsign_id }}</td>
                         <td>{{ row.confidence or '—' }}</td>
                         <td>{{ row.context or row.transcript }}</td>
+                        <td>{{ row.node_id }}</td>
                     </tr>
                 {% endfor %}
                 {% else %}
                     <tr>
-                        <td colspan="4" class="muted">No check-ins yet.</td>
+                        <td colspan="5" class="muted">No check-ins yet.</td>
                     </tr>
                 {% endif %}
             </tbody>
         </table>
     </div>
 </section>
+
+<style>
+.node-selector {
+    margin-bottom: 1rem;
+}
+
+.live-callsigns {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--background-alt, #f5f5f5);
+    border-radius: 4px;
+}
+
+.callsign-list {
+    list-style: none;
+    padding: 0;
+    margin: 0.5rem 0 0 0;
+}
+
+.callsign-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border-color, #ddd);
+}
+
+.callsign-list li:last-child {
+    border-bottom: none;
+}
+
+.callsign {
+    font-weight: bold;
+    font-family: monospace;
+    font-size: 1.1em;
+}
+
+.qrz-check {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+    border-radius: 50%;
+    font-weight: bold;
+}
+
+.qrz-check.valid {
+    background: #4caf50;
+    color: white;
+}
+
+.qrz-check.other {
+    background: #2196f3;
+    color: white;
+}
+
+.qrz-check.invalid {
+    background: #f44336;
+    color: white;
+}
+
+.timestamp {
+    font-size: 0.85em;
+}
+
+.confidence {
+    font-size: 0.9em;
+    color: var(--text-muted, #666);
+}
+
+.node-badge {
+    font-size: 0.75em;
+    padding: 0.2rem 0.5rem;
+    background: var(--primary-color, #007bff);
+    color: white;
+    border-radius: 12px;
+}
+</style>
 {% endblock %}
