@@ -253,6 +253,10 @@ class AnalysisSettings(BaseSettings):
         default=95.0,
         description="Utilization percent considered \"full GPU\" for metrics",
     )
+    purge_net_history_on_boot: bool = Field(
+        default=False,
+        description="When true, purge all existing net history once during orchestrator startup",
+    )
 
     model_config = SettingsConfigDict(env_prefix="TSN_ANALYSIS_")
 

@@ -2,8 +2,10 @@
 Main orchestrator - launches all TSN services.
 """
 
+from datetime import datetime, timezone
 import asyncio
 import signal
+from pathlib import Path
 from typing import List
 
 from tsn_common.config import get_settings
@@ -19,6 +21,37 @@ class ServiceOrchestrator:
         self.settings = get_settings()
         self.tasks: List[asyncio.Task] = []
         self.shutdown_event = asyncio.Event()
+        self._purge_sentinel = self.settings.storage.base_path / ".net_history_purge"
+
+    async def maybe_purge_net_history(self) -> None:
+        """Optionally purge net history once per boot when configured."""
+
+        if not self.settings.analysis.purge_net_history_on_boot:
+            return
+
+        sentinel: Path = self._purge_sentinel
+        if sentinel.exists():
+            logger.info(
+                "net_history_purge_skipped",
+                reason="sentinel_present",
+                sentinel=str(sentinel),
+            )
+            return
+
+        logger.warning("net_history_purge_requested")
+
+        from scripts.reset_net_history import reset_net_history
+
+        await reset_net_history()
+
+        sentinel.write_text(
+            f"purged at {datetime.now(timezone.utc).isoformat()}"
+        )
+
+        logger.info(
+            "net_history_purge_complete",
+            sentinel=str(sentinel),
+        )
 
     async def start_node_services(self) -> None:
         """Start node-side services (watcher + transfer)."""
@@ -151,6 +184,7 @@ class ServiceOrchestrator:
         logger.info("tsn_orchestrator_starting")
 
         try:
+            await self.maybe_purge_net_history()
             # Start all services
             await self.start_node_services()
             await self.start_server_services()

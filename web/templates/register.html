@@ -7,7 +7,7 @@
             <h2>Register</h2>
             <p class="tagline">Claim a portal account to follow nets, operators, and club stats.</p>
         </div>
-        <span class="muted">Bcrypt + SHA256 · 2FA coming soon</span>
+        <span class="muted">Argon2id primary · bcrypt fallback · 2FA coming soon</span>
     </header>
     {% if error %}
         <p class="error">{{ error }}</p>
@@ -35,7 +35,7 @@
                     <input type="password" name="password" required minlength="8" maxlength="256" autocomplete="new-password" />
                 </label>
             </div>
-            <p class="form-hint">Use 8–256 characters. We hash with bcrypt+SHA256 so long passphrases stay safe. Callsigns are optional but help link dashboards.</p>
+            <p class="form-hint">Use 8–256 characters. We hash with Argon2id (and seamlessly accept existing bcrypt hashes) so you can use long passphrases. Callsigns are optional but help link dashboards.</p>
             <button type="submit">Create account</button>
         </fieldset>
     </form>

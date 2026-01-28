@@ -4,12 +4,16 @@ from datetime import datetime, timezone
 import uuid
 
 from passlib.context import CryptContext
+from passlib.exc import PasswordSizeError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from web.models.user import PortalUser
 
-pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["argon2", "bcrypt_sha256"],
+    deprecated="auto",
+)
 
 _MIN_PASSWORD_LEN = 8
 _MAX_PASSWORD_LEN = 256
@@ -29,7 +33,10 @@ def hash_password(password: str) -> str:
     """Return a salted hash suitable for storage."""
 
     normalized = _validate_password(password)
-    return pwd_context.hash(normalized)
+    try:
+        return pwd_context.hash(normalized)
+    except PasswordSizeError as exc:  # pragma: no cover - defensive guard
+        raise ValueError("Password must be 256 characters or fewer") from exc
 
 
 def verify_password(password: str, hashed: str) -> bool:

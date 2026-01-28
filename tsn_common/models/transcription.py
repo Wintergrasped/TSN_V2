@@ -1,5 +1,6 @@
 """Transcription models - stores Whisper output and metadata."""
 
+from datetime import datetime
 import enum
 import uuid
 from typing import TYPE_CHECKING
