@@ -1251,13 +1251,13 @@ Respond ONLY with JSON in this schema:
      "window_hours": 4
     }},
     "merge_suggestions": [
-        {
+        {{
             "type": "club|callsign",
             "entity": "PSRG",
             "canonical": "Puget Sound Repeater Group",
             "confidence": 0.85,
             "reason": "context evidence"
-        }
+        }}
     ]
 }}
 
