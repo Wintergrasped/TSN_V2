@@ -197,6 +197,38 @@ class AnalysisSettings(BaseSettings):
         default=True,
         description="Capture merge/alias suggestions from analyzer output",
     )
+    gpu_watch_enabled: bool = Field(
+        default=True,
+        description="Monitor GPU utilization from the analyzer container",
+    )
+    gpu_low_utilization_pct: float = Field(
+        default=35.0,
+        description="Below this percent the GPU is considered idle and backfill work is triggered",
+    )
+    gpu_check_interval_sec: float = Field(
+        default=15.0,
+        description="Seconds between GPU utilization samples to avoid hammering nvidia-smi",
+    )
+    gpu_overdrive_budget: int = Field(
+        default=31500,
+        description="Character budget to target when GPU is idle (keeps 32k context saturated)",
+    )
+    profile_refresh_hours: int = Field(
+        default=12,
+        description="Minimum hours before a callsign profile becomes eligible for refresh",
+    )
+    profile_context_hours: int = Field(
+        default=240,
+        description="Historical window (hours) of data summarized for profile refresh prompts",
+    )
+    profile_batch_size: int = Field(
+        default=3,
+        description="How many callsign profiles to refresh in a single idle GPU pass",
+    )
+    profile_min_seen_count: int = Field(
+        default=5,
+        description="Minimum segment count before a callsign is considered for profile refresh",
+    )
 
     model_config = SettingsConfigDict(env_prefix="TSN_ANALYSIS_")
 

@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import random
+import shutil
+import subprocess
 import time
 import uuid
 from collections import defaultdict
@@ -77,6 +80,9 @@ class TranscriptAnalyzer:
         self.analysis_settings = analysis_settings
         self.http_client = httpx.AsyncClient(timeout=vllm_settings.timeout_sec)
         self._openai_client: AsyncOpenAI | None = None
+        self._gpu_last_sample: float = 0.0
+        self._gpu_last_value: float | None = None
+        self._gpu_warned_missing: bool = False
 
         logger.info(
             "analyzer_initialized",
@@ -220,6 +226,60 @@ class TranscriptAnalyzer:
 
         return extra_contexts
 
+    def _query_gpu_utilization_sync(self) -> float | None:
+        """Execute nvidia-smi (if available) to get the current GPU utilization percent."""
+
+        binary = shutil.which("nvidia-smi")
+        if not binary:
+            if not self._gpu_warned_missing:
+                logger.debug("gpu_utilization_binary_missing")
+                self._gpu_warned_missing = True
+            return None
+
+        try:
+            result = subprocess.run(
+                [binary, "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            line = (result.stdout or "").strip().splitlines()[0]
+            return float(line)
+        except Exception as exc:  # pragma: no cover - depends on host GPU
+            logger.debug("gpu_utilization_sample_failed", error=str(exc))
+            return None
+
+    async def _sample_gpu_utilization(self) -> float | None:
+        """Return cached GPU utilization, throttling expensive shell calls."""
+
+        if not self.analysis_settings.gpu_watch_enabled:
+            return None
+
+        interval = max(1.0, self.analysis_settings.gpu_check_interval_sec)
+        now = time.monotonic()
+        if self._gpu_last_value is not None and (now - self._gpu_last_sample) < interval:
+            return self._gpu_last_value
+
+        loop = asyncio.get_running_loop()
+        value = await loop.run_in_executor(None, self._query_gpu_utilization_sync)
+        self._gpu_last_sample = now
+        self._gpu_last_value = value
+        return value
+
+    async def _gpu_is_underutilized(self) -> bool:
+        """True when GPU utilization is below the configured threshold."""
+
+        if not self.analysis_settings.gpu_watch_enabled:
+            return False
+        value = await self._sample_gpu_utilization()
+        if value is None:
+            return False
+        threshold = max(0.0, min(100.0, self.analysis_settings.gpu_low_utilization_pct))
+        if value < threshold:
+            logger.debug("gpu_underutilized", utilization=value, threshold=threshold)
+            return True
+        return False
+
     async def _extend_context_window(
         self,
         contexts: list[ContextEntry],
@@ -327,12 +387,35 @@ class TranscriptAnalyzer:
             logger.info("analysis_refinement_batch_enqueued", count=queued)
             return queued
 
-    def _build_context_block(self, contexts: list[ContextEntry]) -> tuple[list[ContextEntry], str]:
+    async def _maybe_queue_gpu_backfill(self) -> str | None:
+        """Kick off additional work (refinements or profiles) when the GPU is idle."""
+
+        if not await self._gpu_is_underutilized():
+            return None
+
+        refinement = await self._queue_refinement_work()
+        if refinement:
+            return "audio_requeued"
+
+        refreshed = await self._run_profile_refresh()
+        if refreshed:
+            return "profile_refresh"
+
+        return None
+
+    def _build_context_block(
+        self,
+        contexts: list[ContextEntry],
+        *,
+        overdrive: bool = False,
+    ) -> tuple[list[ContextEntry], str]:
         """Trim transcripts into the configured context budget and build prompt text."""
         if not contexts:
             return [], ""
 
         remaining = max(self.analysis_settings.context_char_budget, 2000)
+        if overdrive:
+            remaining = max(remaining, self.analysis_settings.gpu_overdrive_budget)
         included: list[ContextEntry] = []
         block_parts: list[str] = []
 
@@ -535,7 +618,7 @@ Respond ONLY with JSON in this schema:
 
 If you need more context to finish a net, include a top-level
 "context_request" object such as
-{"after_context": 4, "min_segments": 2, "reason": "Net still in progress"}.
+{{"after_context": 4, "min_segments": 2, "reason": "Net still in progress"}}.
 """
 
     async def _mark_audio_files(self, audio_ids: Sequence[uuid.UUID], state: AudioFileState, failed: bool = False) -> None:
@@ -583,6 +666,300 @@ If you need more context to finish a net, include a top-level
             last_seen=now,
             seen_count=1,
         )
+
+    async def _select_profile_candidates(self) -> list[dict[str, Any]]:
+        batch_size = max(0, self.analysis_settings.profile_batch_size)
+        if batch_size <= 0:
+            return []
+
+        now = datetime.now(timezone.utc)
+        refresh_cutoff = now - timedelta(hours=max(1, self.analysis_settings.profile_refresh_hours))
+        window_start = now - timedelta(hours=max(1, self.analysis_settings.profile_context_hours))
+
+        async with get_session() as session:
+            base_query = (
+                select(Callsign, CallsignProfile)
+                .outerjoin(CallsignProfile, CallsignProfile.callsign_id == Callsign.id)
+                .where(
+                    Callsign.seen_count >= self.analysis_settings.profile_min_seen_count,
+                    func.coalesce(
+                        CallsignProfile.last_analyzed_at,
+                        datetime(1970, 1, 1, tzinfo=timezone.utc),
+                    )
+                    < refresh_cutoff,
+                )
+                .order_by(Callsign.last_seen.desc())
+                .limit(batch_size * 4)
+                .with_for_update(skip_locked=True)
+            )
+            result = await session.execute(base_query)
+            rows = result.all()
+            if not rows:
+                return []
+
+            candidates: list[dict[str, Any]] = []
+            for callsign, profile in rows:
+                candidates.append(
+                    {
+                        "callsign": callsign.callsign,
+                        "callsign_id": callsign.id,
+                        "profile_id": profile.id if profile else None,
+                        "last_seen": callsign.last_seen,
+                        "seen_count": callsign.seen_count,
+                        "metadata": dict(callsign.metadata_ or {}),
+                    }
+                )
+                if len(candidates) >= batch_size:
+                    break
+
+            if not candidates:
+                return []
+
+            callsign_ids = [entry["callsign_id"] for entry in candidates]
+            stats_map: dict[uuid.UUID, dict[str, Any]] = {
+                entry["callsign_id"]: {
+                    **entry,
+                    "segments": 0,
+                    "net_count": 0,
+                    "net_transmissions": 0,
+                    "ncs_count": 0,
+                    "topics": [],
+                    "window_start": window_start,
+                }
+                for entry in candidates
+            }
+
+            log_stmt = (
+                select(
+                    CallsignLog.callsign_id,
+                    func.count().label("segments"),
+                    func.max(CallsignLog.detected_at).label("last_log_seen"),
+                )
+                .where(
+                    CallsignLog.callsign_id.in_(callsign_ids),
+                    CallsignLog.detected_at >= window_start,
+                )
+                .group_by(CallsignLog.callsign_id)
+            )
+            log_rows = await session.execute(log_stmt)
+            for callsign_id, segment_count, last_log in log_rows.all():
+                stats = stats_map.get(callsign_id)
+                if not stats:
+                    continue
+                stats["segments"] = int(segment_count or 0)
+                stats["last_activity"] = last_log
+
+            net_stmt = (
+                select(
+                    NetParticipation.callsign_id,
+                    func.count(func.distinct(NetParticipation.net_session_id)).label("distinct_nets"),
+                    func.sum(NetParticipation.transmission_count).label("net_tx"),
+                    func.max(NetParticipation.last_seen).label("last_net"),
+                )
+                .where(
+                    NetParticipation.callsign_id.in_(callsign_ids),
+                    NetParticipation.last_seen >= window_start,
+                )
+                .group_by(NetParticipation.callsign_id)
+            )
+            net_rows = await session.execute(net_stmt)
+            for callsign_id, distinct_nets, net_tx, last_net in net_rows.all():
+                stats = stats_map.get(callsign_id)
+                if not stats:
+                    continue
+                stats["net_count"] = int(distinct_nets or 0)
+                stats["net_transmissions"] = int(net_tx or 0)
+                stats["last_net_activity"] = last_net
+
+            ncs_stmt = (
+                select(
+                    NetSession.ncs_callsign_id,
+                    func.count(NetSession.id).label("ncs_count"),
+                    func.max(NetSession.start_time).label("last_led"),
+                )
+                .where(
+                    NetSession.ncs_callsign_id.in_(callsign_ids),
+                    NetSession.start_time >= window_start,
+                )
+                .group_by(NetSession.ncs_callsign_id)
+            )
+            ncs_rows = await session.execute(ncs_stmt)
+            for callsign_id, ncs_count, last_led in ncs_rows.all():
+                stats = stats_map.get(callsign_id)
+                if not stats:
+                    continue
+                stats["ncs_count"] = int(ncs_count or 0)
+                stats["last_led"] = last_led
+
+            topic_stmt = (
+                select(
+                    CallsignTopic.callsign_id,
+                    CallsignTopic.topic,
+                    func.count().label("topic_hits"),
+                )
+                .where(
+                    CallsignTopic.callsign_id.in_(callsign_ids),
+                    CallsignTopic.detected_at >= window_start,
+                )
+                .group_by(CallsignTopic.callsign_id, CallsignTopic.topic)
+            )
+            topic_rows = await session.execute(topic_stmt)
+            topic_map: dict[uuid.UUID, list[tuple[str, int]]] = defaultdict(list)
+            for callsign_id, topic, hits in topic_rows.all():
+                topic_map[callsign_id].append((topic, int(hits or 0)))
+            for callsign_id, stats in stats_map.items():
+                ranked = sorted(topic_map.get(callsign_id, []), key=lambda item: (-item[1], item[0]))
+                stats["topics"] = [topic for topic, _ in ranked[:5]]
+
+            window_hours = max(1, self.analysis_settings.profile_context_hours)
+            for stats in stats_map.values():
+                segments = stats.get("segments", 0)
+                net_tx = stats.get("net_transmissions", 0)
+                open_segments = max(0, segments - (net_tx or 0))
+                stats["bias_score"] = self._compute_bias_score(stats.get("net_count", 0), open_segments)
+                stats["window_hours"] = window_hours
+
+            ordered = [stats_map[entry["callsign_id"]] for entry in candidates]
+            return ordered
+
+    @staticmethod
+    def _compute_bias_score(net_events: int, open_segments: int) -> float:
+        ratio = (float(net_events) + 1.0) / (float(open_segments) + 1.0)
+        try:
+            return round(math.tanh(math.log(ratio)), 4)
+        except (ValueError, OverflowError):
+            return 0.0
+
+    def _summarize_callsign_metadata(self, metadata: dict[str, Any]) -> str:
+        if not metadata:
+            return "n/a"
+        interesting_keys = ("home_club", "club", "license_class", "grid", "section", "notes")
+        hints = [f"{key}:{metadata[key]}" for key in interesting_keys if metadata.get(key)]
+        return ", ".join(hints) if hints else "n/a"
+
+    def _build_profile_context(self, stats: list[dict[str, Any]], window_hours: int) -> str:
+        lines: list[str] = []
+        for entry in stats:
+            topics = ", ".join(entry.get("topics") or []) or "unknown"
+            last_seen = entry.get("last_activity") or entry.get("last_seen")
+            last_seen_str = last_seen.isoformat() if isinstance(last_seen, datetime) else str(last_seen or "unknown")
+            metadata_notes = self._summarize_callsign_metadata(entry.get("metadata") or {})
+            bias = entry.get("bias_score")
+            lines.append(
+                "\n".join(
+                    [
+                        f"### CALLSIGN {entry['callsign']}",
+                        f"WindowHours: {window_hours}",
+                        f"SegmentsWindow: {entry.get('segments', 0)} | DistinctNets: {entry.get('net_count', 0)} | NCSCount: {entry.get('ncs_count', 0)}",
+                        f"BiasScore: {bias}",
+                        f"LastActivity: {last_seen_str}",
+                        f"RecentTopics: {topics}",
+                        f"MetadataHints: {metadata_notes}",
+                    ]
+                )
+            )
+        return "\n\n".join(lines)
+
+    def _build_profile_prompt(self, profile_block: str, window_hours: int) -> str:
+        return (
+            "You maintain extended operator profiles for amateur radio callsigns. "
+            f"Use the ~{window_hours}-hour activity summaries to refresh biographies, favorite topics, "
+            "and engagement metrics. Respond with STRICT JSON of the form "
+            '{"profiles": [{"callsign": "...", "summary": "...", "favorite_topics": [], '
+            '"activity_score": 0.0-1.0, "engagement_score": 0.0-1.0, "recommended_actions": []}]}. '
+            "Reflect notable clubs, NCS history, and topical focus."
+            f"\nDATA START\n{profile_block}\nDATA END"
+        )
+
+    async def _run_profile_refresh(self) -> bool:
+        stats = await self._select_profile_candidates()
+        if not stats:
+            return False
+
+        window_hours = max(1, self.analysis_settings.profile_context_hours)
+        profile_context = self._build_profile_context(stats, window_hours)
+        prompt = self._build_profile_prompt(profile_context, window_hours)
+
+        try:
+            response_text, response_meta = await self.call_vllm(prompt, pass_label="profile_refresh")
+        except Exception as exc:  # pragma: no cover - vLLM connectivity
+            logger.warning("profile_refresh_call_failed", error=str(exc))
+            return False
+
+        try:
+            payload = json.loads(response_text)
+        except json.JSONDecodeError:
+            logger.warning("profile_refresh_bad_json", preview=response_text[:200])
+            return False
+
+        updated = await self._persist_profile_payload(payload)
+        latency_ms = (response_meta or {}).get("latency_ms") if isinstance(response_meta, dict) else None
+        logger.info(
+            "profile_refresh_completed",
+            requested=len(stats),
+            updated=updated,
+            latency_ms=latency_ms,
+        )
+        return True
+
+    async def _persist_profile_payload(self, payload: dict[str, Any]) -> int:
+        profiles = payload.get("profiles") if isinstance(payload, dict) else None
+        if not profiles:
+            return 0
+
+        updated = 0
+        async with get_session() as session:
+            now = datetime.now(timezone.utc)
+            for entry in profiles:
+                callsign_raw = (entry or {}).get("callsign")
+                normalized = normalize_callsign(callsign_raw)
+                if not normalized:
+                    continue
+
+                stmt = (
+                    select(Callsign, CallsignProfile)
+                    .outerjoin(CallsignProfile, CallsignProfile.callsign_id == Callsign.id)
+                    .where(Callsign.callsign == normalized)
+                    .with_for_update(skip_locked=True)
+                )
+                result = await session.execute(stmt)
+                row = result.first()
+                if not row:
+                    continue
+
+                callsign, profile = row
+                if profile is None:
+                    profile = CallsignProfile(callsign_id=callsign.id)
+                    session.add(profile)
+
+                summary = (entry.get("summary") or entry.get("profile_summary") or "").strip() or None
+                topics = entry.get("favorite_topics") or entry.get("primary_topics") or entry.get("topics") or []
+                activity_score = self._coerce_float(entry.get("activity_score"))
+                engagement_score = self._coerce_float(entry.get("engagement_score"))
+
+                profile.profile_summary = summary
+                profile.primary_topics = topics if topics else None
+                profile.activity_score = activity_score
+                profile.engagement_score = engagement_score
+                profile.last_analyzed_at = now
+
+                metadata = dict(profile.metadata_ or {})
+                metadata["last_refresh"] = {
+                    "recommended_actions": entry.get("recommended_actions"),
+                    "source": "vllm_profile_refresh",
+                }
+                profile.metadata_ = metadata
+                updated += 1
+
+            await session.flush()
+        return updated
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
         session.add(record)
         await session.flush()
         return record
@@ -1290,7 +1667,13 @@ If you need more context to finish a net, include a top-level
             if refinement:
                 contexts = await self._reserve_batch()
             if not contexts:
-                return False
+                gpu_job = await self._maybe_queue_gpu_backfill()
+                if gpu_job == "profile_refresh":
+                    return True
+                if gpu_job == "audio_requeued":
+                    contexts = await self._reserve_batch()
+                if not contexts:
+                    return False
 
         extension_attempts = 0
         payload: dict[str, Any] | None = None
@@ -1299,7 +1682,11 @@ If you need more context to finish a net, include a top-level
         response_tokens: int | None = None
 
         while True:
-            included, context_block = self._build_context_block(contexts)
+            overdrive_context = await self._gpu_is_underutilized()
+            included, context_block = self._build_context_block(
+                contexts,
+                overdrive=overdrive_context,
+            )
             if not included:
                 await self._release_unprocessed([ctx.audio_id for ctx in contexts])
                 logger.warning("analysis_batch_skipped_no_context")
