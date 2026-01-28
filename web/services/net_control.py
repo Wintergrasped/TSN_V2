@@ -67,8 +67,15 @@ async def start_session(
     started_by: str,
     started_by_callsign: str | None,
     notes: str | None = None,
+    node_id: str | None = None,
 ) -> dict:
     await _ensure_net_control_table(session)
+    
+    # Store node_id in metadata if provided
+    metadata = {}
+    if node_id:
+        metadata["node_id"] = node_id
+    
     record = NetControlSession(
         name=name.strip() or "Unlabeled Net",
         status="active",
@@ -76,6 +83,7 @@ async def start_session(
         started_by_callsign=started_by_callsign,
         notes=notes,
         started_at=datetime.now(timezone.utc),
+        metadata_=metadata,
     )
     session.add(record)
     await session.flush()
@@ -96,6 +104,12 @@ async def stop_session(session, session_id: uuid.UUID) -> dict | None:
 def serialize_session(record: NetControlSession | None) -> dict | None:
     if record is None:
         return None
+    
+    # Extract node_id from metadata if present
+    node_id = None
+    if record.metadata_:
+        node_id = record.metadata_.get("node_id")
+    
     return {
         "id": str(record.id),
         "name": record.name,
@@ -106,6 +120,7 @@ def serialize_session(record: NetControlSession | None) -> dict | None:
         "ended_at": record.ended_at.isoformat() if record.ended_at else None,
         "notes": record.notes,
         "download_url": record.download_url,
+        "node_id": node_id,
     }
 
 

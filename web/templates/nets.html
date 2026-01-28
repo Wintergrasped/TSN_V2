@@ -12,8 +12,9 @@
             <th>Club</th>
             <th>Start</th>
             <th>Duration (min)</th>
+            <th>Structure</th>
             <th>Participants</th>
-            <th>Avg Check-in (s)</th>
+            <th>Formal Check-ins</th>
             <th>Confidence</th>
         </tr>
     </thead>
@@ -24,8 +25,26 @@
             <td>{{ net.club or '—' }}</td>
             <td>{{ net.start_time }}</td>
             <td>{{ net.duration_sec // 60 }}</td>
+            <td>
+                {% if net.formal_structure %}
+                    {% set fs = net.formal_structure %}
+                    <span title="Opening: {{ 'Yes' if fs.get('has_opening') else 'No' }}, Check-ins: {{ 'Yes' if fs.get('has_checkins') else 'No' }}, Closing: {{ 'Yes' if fs.get('has_closing') else 'No' }}">
+                        {{ '✓' if fs.get('has_opening') else '✗' }}
+                        {{ '✓' if fs.get('has_checkins') else '✗' }}
+                        {{ '✓' if fs.get('has_closing') else '✗' }}
+                    </span>
+                {% else %}
+                    —
+                {% endif %}
+            </td>
             <td>{{ net.participants }}</td>
-            <td>{{ net.avg_checkin_length_sec or '—' }}</td>
+            <td>
+                {% if net.checkin_sequence %}
+                    {{ net.checkin_sequence | length }}
+                {% else %}
+                    —
+                {% endif %}
+            </td>
             <td>{{ '{:.0%}'.format(net.confidence) if net.confidence else '—' }}</td>
         </tr>
         {% endfor %}

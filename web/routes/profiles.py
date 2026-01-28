@@ -201,6 +201,7 @@ async def net_control_page(
 async def start_net_control(
     name: str = Form(""),
     notes: str = Form(""),
+    node_id: str = Form(""),
     session=Depends(get_db_session),
     current_user: PortalUser = Depends(get_current_user),
 ):
@@ -210,6 +211,7 @@ async def start_net_control(
         started_by=current_user.display_name,
         started_by_callsign=current_user.callsign,
         notes=notes or None,
+        node_id=node_id or None,
     )
     return RedirectResponse("/net-control", status_code=status.HTTP_303_SEE_OTHER)
 

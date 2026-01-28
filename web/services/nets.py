@@ -109,4 +109,7 @@ async def fetch_net_summary(session: AsyncSession, net_id: str) -> dict[str, Any
         "source_segments": net.source_segments or [],
         "participants": participant_payload,
         "transcripts": transcripts,
+        "formal_structure": net.formal_structure,
+        "ncs_script": net.ncs_script or [],
+        "checkin_sequence": net.checkin_sequence or [],
     }

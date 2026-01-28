@@ -1184,20 +1184,37 @@ CONTEXT START
 {context_block}
 CONTEXT END
 
-Tasks (minimum requirements):
-1. Net Identification (Primary Pass): Decide whether the provided transcripts
-    form one cohesive net or multiple nets. Only emit a net when you have
-    >=3 transcript sources spanning >=180 seconds and >=2 non-NCS participants.
-    If you cannot meet those constraints, request more context instead of
-    emitting low-confidence fragments.
-2. Net Validation (Self-check): For each proposed net, justify why the evidence
-    proves it is a legitimate organized session. Include a confidence 0-1.
-3. Callsign Topic History & Profiles: summarize favorite topics, recent roles,
-    and notable transcript references for each callsign.
-4. Club/Organization Detection & Alias Insight: identify clubs, schedules, and
-    when two names are likely the same group (e.g., "PSRG" vs "Puget Sound").
-5. Trend Analysis: describe topic/callsign trends or anomalies even when nets
-    are quiet so GPUs stay busy.
+CRITICAL: Amateur radio NETS have FORMAL STRUCTURE - detect these specific markers:
+
+1. NET DETECTION (Primary Goal):
+   FORMAL NETS ALWAYS HAVE:
+   a) OPENING: NCS announces net name, club, purpose ("This is the [name] net")
+   b) CHECK-INS: Formal roll call with callsigns, locations, names
+      - NCS says: "Any check-ins?", "Go ahead with your call", "We have [callsign]"
+      - Stations say: "This is [callsign], [name], [location]"
+   c) CLOSING: Formal sign-off ("This concludes the [name] net", "73s", "Thanks for checking in")
+   
+   EVIDENCE REQUIRED FOR NET:
+   - >=3 transcript sources spanning >=180 seconds
+   - >=2 non-NCS participants with CLEAR check-ins
+   - Formal opening OR closing statement
+   - Net Control Station (NCS) managing traffic
+   
+   Extract these MANDATORY fields for each net:
+   - "formal_structure": {{opening/checkins/closing booleans + exact quotes}}
+   - "ncs_script": [List of NCS management statements]
+   - "checkin_sequence": [Ordered list of formal check-ins with quotes]
+
+2. VALIDATION: Each proposed net must have confidence >=0.85 and justify:
+   - Which transcript contains opening/closing?
+   - How many formal check-ins were detected?
+   - What proves this is organized (not random QSO)?
+
+3. Callsign Profiles: Track net participation, roles, and topics.
+
+4. Club Detection: Match net names to clubs, extract schedules.
+
+5. Trends: Analyze patterns even when no complete nets detected.
 
 Respond ONLY with JSON in this schema:
 {{
@@ -1209,15 +1226,29 @@ Respond ONLY with JSON in this schema:
       "ncs": "CALLSIGN",
       "summary": "one paragraph",
       "topics": ["..."],
+      "formal_structure": {{
+        "has_opening": true|false,
+        "has_checkins": true|false,
+        "has_closing": true|false,
+        "opening_text": "Exact quote from transcript",
+        "closing_text": "Exact quote from transcript",
+        "opening_source": transcript_number,
+        "closing_source": transcript_number
+      }},
+      "ncs_script": ["List of NCS statements like 'This is...', 'Any check-ins?', etc"],
+      "checkin_sequence": [
+        {{"callsign": "W1ABC", "time": transcript_number, "statement": "exact check-in quote"}}
+      ],
       "stats": {{
          "duration_minutes": 0,
          "checkins": 0,
+         "formal_checkins": 0,
          "avg_checkin_length_sec": 0,
          "confidence": 0.0
       }},
       "participants": [
         {{"callsign": "W1ABC", "checkin_type": "regular|late|io|proxy|relay",
-          "talk_time_sec": 45, "notes": "..."}}
+          "talk_time_sec": 45, "notes": "...", "checkin_statement": "exact quote"}}
       ],
             "sources": [transcript_numbers]
     }}
@@ -1817,6 +1848,11 @@ If you need more context to finish a net, include a top-level
                     )
                     continue
 
+                # Extract formal structure data
+                formal_structure = net.get("formal_structure")
+                ncs_script = net.get("ncs_script")
+                checkin_sequence = net.get("checkin_sequence")
+
                 net_session = NetSession(
                     net_name=net.get("name", "Unnamed Net"),
                     net_type=net.get("net_type"),
@@ -1831,6 +1867,9 @@ If you need more context to finish a net, include a top-level
                     topics=topics,
                     statistics=statistics,
                     source_segments=source_segments,
+                    formal_structure=formal_structure,
+                    ncs_script=ncs_script,
+                    checkin_sequence=checkin_sequence,
                 )
                 session.add(net_session)
                 await session.flush()
@@ -2057,6 +2096,17 @@ If you need more context to finish a net, include a top-level
                 }
             )
 
+        # Add formal structure info to validation
+        for i, net in enumerate(nets):
+            if i < len(nets_outline):
+                formal = net.get("formal_structure", {})
+                nets_outline[i]["has_formal_structure"] = all([
+                    formal.get("has_opening"),
+                    formal.get("has_checkins"),
+                    formal.get("has_closing")
+                ])
+                nets_outline[i]["formal_checkins"] = len(net.get("checkin_sequence", []))
+
         validator_prompt = json.dumps(
             {
                 "transcript_digests": digest_parts,
@@ -2067,9 +2117,12 @@ If you need more context to finish a net, include a top-level
 
         prompt = (
             "You are the validation pass for amateur radio net detection. "
-            "Given transcript digests and proposed nets, mark each net as valid=true|false, "
-            "include a confidence score 0-1, and a reason. Provide JSON of the form "
-            "{\"validations\": [{\"name\": \"...\", \"valid\": true, \"confidence\": 0.9, \"reason\": \"...\"}]}."
+            "FORMAL NETS must have: opening statement, formal check-ins, and closing. "
+            "Validate each net checking: (1) Has complete formal structure? "
+            "(2) Contains formal check-in statements? (3) Confidence >=0.85? "
+            "Mark as valid=true|false with confidence 0-1 and specific reason. "
+            "Reject if structure is incomplete or check-ins are vague. "
+            "Provide JSON: {\"validations\": [{\"name\": \"...\", \"valid\": true, \"confidence\": 0.9, \"reason\": \"...\"}]}."
             f"\nINPUT:\n{validator_prompt}"
         )
 

@@ -87,6 +87,11 @@ class NetSession(Base):
     topics: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     statistics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_segments: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    
+    # Formal structure detection (NEW - for improved net detection)
+    formal_structure: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    ncs_script: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    checkin_sequence: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     ncs_callsign: Mapped["Callsign | None"] = relationship(foreign_keys=[ncs_callsign_id])
@@ -120,6 +125,9 @@ class NetSession(Base):
             "topics": self.topics,
             "statistics": self.statistics,
             "source_segments": self.source_segments,
+            "formal_structure": self.formal_structure,
+            "ncs_script": self.ncs_script,
+            "checkin_sequence": self.checkin_sequence,
         }
 
 

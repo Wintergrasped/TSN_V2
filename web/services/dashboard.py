@@ -405,6 +405,8 @@ async def get_recent_nets(
             "confidence": net.confidence,
             "avg_checkin_length_sec": (net.statistics or {}).get("avg_checkin_length_sec"),
             "total_talk_seconds": (net.statistics or {}).get("total_talk_seconds"),
+            "formal_structure": net.formal_structure,
+            "checkin_sequence": net.checkin_sequence,
         }
         for net in result.scalars().all()
     ]

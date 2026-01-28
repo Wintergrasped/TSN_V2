@@ -16,6 +16,31 @@
                 <li><strong>Participants:</strong> {{ net.participant_count }}</li>
                 <li><strong>Confidence:</strong> {{ '{:.0%}'.format(net.confidence) if net.confidence is not none else '—' }}</li>
             </ul>
+            
+            {% if net.formal_structure %}
+            <h4>Formal Structure</h4>
+            {% set fs = net.formal_structure %}
+            <ul class="meta-list">
+                <li><strong>Opening:</strong> {{ '✓ Yes' if fs.get('has_opening') else '✗ No' }}</li>
+                <li><strong>Check-ins:</strong> {{ '✓ Yes' if fs.get('has_checkins') else '✗ No' }}</li>
+                <li><strong>Closing:</strong> {{ '✓ Yes' if fs.get('has_closing') else '✗ No' }}</li>
+            </ul>
+            {% if fs.get('opening_text') %}
+            <div class="well">
+                <h5>Opening Statement</h5>
+                <p><em>"{{ fs.opening_text }}"</em></p>
+                <span class="muted">Source: Transcript #{{ fs.opening_source }}</span>
+            </div>
+            {% endif %}
+            {% if fs.get('closing_text') %}
+            <div class="well">
+                <h5>Closing Statement</h5>
+                <p><em>"{{ fs.closing_text }}"</em></p>
+                <span class="muted">Source: Transcript #{{ fs.closing_source }}</span>
+            </div>
+            {% endif %}
+            {% endif %}
+            
             <h4>Engagement Metrics</h4>
             <ul class="meta-list">
                 <li><strong>Check-ins:</strong> {{ net.metrics.checkins }}</li>
@@ -43,6 +68,21 @@
             {% else %}
                 <p class="muted">No topics captured.</p>
             {% endif %}
+            
+            {% if net.ncs_script %}
+            <h4>NCS Script</h4>
+            <div class="well">
+                <ul>
+                {% for statement in net.ncs_script[:10] %}
+                    <li>"{{ statement }}"</li>
+                {% endfor %}
+                {% if net.ncs_script|length > 10 %}
+                    <li class="muted">...and {{ net.ncs_script|length - 10 }} more</li>
+                {% endif %}
+                </ul>
+            </div>
+            {% endif %}
+            
             {% if net.statistics %}
                 <h4>Analyzer Snapshot</h4>
                 <ul class="meta-list">
@@ -66,6 +106,37 @@
         </article>
     </div>
 </section>
+
+{% if net.checkin_sequence %}
+<section class="card">
+    <div class="card-header">
+        <h3>Formal Check-in Sequence</h3>
+        <span class="muted">Detected formal check-ins in order.</span>
+    </div>
+    <div class="card-body">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Callsign</th>
+                    <th>Time</th>
+                    <th>Statement</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for checkin in net.checkin_sequence %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ callsign_link(checkin.callsign) }}</td>
+                    <td>Transcript #{{ checkin.time }}</td>
+                    <td><em>"{{ checkin.statement }}"</em></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
 
 <section class="card">
     <div class="card-header">
