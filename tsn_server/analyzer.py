@@ -2666,8 +2666,10 @@ If you need more context to finish a net, include a top-level
         last_stats_log = start_time
         
         try:
+            logger.info("analysis_worker_entering_main_loop", worker_id=worker_id)
             while True:
                 iterations += 1
+                logger.debug("analysis_worker_starting_iteration", worker_id=worker_id, iteration=iterations)
                 
                 try:
                     processed = await self.process_one()
@@ -2694,6 +2696,8 @@ If you need more context to finish a net, include a top-level
                 else:
                     idle_cycles += 1
                     await asyncio.sleep(self.analysis_settings.idle_poll_interval_sec)
+                
+                logger.debug("analysis_worker_about_to_loop", worker_id=worker_id, iteration=iterations)
                 
                 # Log worker statistics every 5 minutes
                 now = time.monotonic()
