@@ -119,9 +119,9 @@ class ServiceOrchestrator:
             worker_task = asyncio.create_task(extractor.run_worker(i))
             self.tasks.append(worker_task)
 
-        # Analysis workers
-        analyzer = TranscriptAnalyzer(self.settings.vllm, self.settings.analysis)
+        # Analysis workers - create separate instance per worker to avoid shared state
         for i in range(self.settings.analysis.worker_count):
+            analyzer = TranscriptAnalyzer(self.settings.vllm, self.settings.analysis)
             worker_task = asyncio.create_task(analyzer.run_worker(i))
             self.tasks.append(worker_task)
 
