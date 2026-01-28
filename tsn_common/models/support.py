@@ -102,7 +102,7 @@ class AiRunLog(Base):
 
     backend: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    pass_label: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    pass_label: Mapped[str] = mapped_column(String(64), nullable=False)
     success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -118,7 +118,7 @@ class AiRunLog(Base):
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
 
     __table_args__ = (
-        Index("ix_ai_run_logs_pass_label", "pass_label", "created_at"),
+        Index("ix_ai_run_logs_pass_created", "pass_label", "created_at"),
     )
 
     def __repr__(self) -> str:
