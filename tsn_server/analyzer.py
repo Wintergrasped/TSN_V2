@@ -2668,7 +2668,26 @@ If you need more context to finish a net, include a top-level
         try:
             while True:
                 iterations += 1
-                processed = await self.process_one()
+                
+                try:
+                    processed = await self.process_one()
+                except Exception as process_exc:
+                    logger.error(
+                        "analysis_worker_process_one_exception",
+                        worker_id=worker_id,
+                        iteration=iterations,
+                        error=str(process_exc),
+                        exc_info=True,
+                    )
+                    raise
+                
+                # Log after EVERY iteration to see if loop continues
+                logger.info(
+                    "analysis_worker_iteration_complete",
+                    worker_id=worker_id,
+                    iteration=iterations,
+                    processed=processed,
+                )
                 
                 if processed:
                     work_cycles += 1
