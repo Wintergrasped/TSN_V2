@@ -21,8 +21,8 @@ from web.routes import api, auth, dashboard, profiles
 BASE_DIR = Path(__file__).resolve().parent
 logger = get_logger(__name__)
 
-# Pattern to match node_id from filename: node_123_timestamp.wav or node1_timestamp.wav
-NODE_FILENAME_PATTERN = re.compile(r'^node[_\s]*(\w+)_\d+\.wav$', re.IGNORECASE)
+# Pattern to match node_id from filename: NODEID_timestamp.wav (e.g., 66296_2026012520595573.WAV)
+NODE_FILENAME_PATTERN = re.compile(r'^(\d+)_\d+\.wav$', re.IGNORECASE)
 
 
 async def repair_node_ids_periodic() -> None:
