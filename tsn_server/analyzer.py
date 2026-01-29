@@ -920,16 +920,6 @@ class TranscriptAnalyzer:
                 )
                 latency_ms = (response_meta or {}).get("latency_ms")
                 payload = json.loads(response_text)
-            except RuntimeError as exc:
-                # vLLM unavailable - skip smoothing but don't crash
-                if "All vLLM endpoints failed" in str(exc):
-                    logger.warning(
-                        "transcript_smoothing_skipped_vllm_unavailable",
-                        chunk_size=len(chunk),
-                        error=str(exc)
-                    )
-                    continue
-                raise
             except Exception as exc:
                 logger.warning("transcript_smoothing_failed", error=str(exc))
                 continue
@@ -2736,28 +2726,6 @@ If you need more context to finish a net, include a top-level
                 
                 try:
                     processed = await self.process_one()
-                except RuntimeError as process_exc:
-                    # Handle vLLM unavailability gracefully - don't crash worker
-                    if "All vLLM endpoints failed" in str(process_exc):
-                        logger.warning(
-                            "analysis_worker_vllm_unavailable",
-                            worker_id=worker_id,
-                            iteration=iterations,
-                            error=str(process_exc),
-                        )
-                        processed = False
-                        # Sleep longer when vLLM is down to avoid spamming logs
-                        await asyncio.sleep(min(30, self.analysis_settings.idle_poll_interval_sec * 3))
-                    else:
-                        logger.error(
-                            "analysis_worker_runtime_error",
-                            worker_id=worker_id,
-                            iteration=iterations,
-                            error=str(process_exc),
-                            exc_info=True,
-                        )
-                        processed = False
-                        await asyncio.sleep(5)  # Brief pause before retrying
                 except Exception as process_exc:
                     logger.error(
                         "analysis_worker_process_one_exception",
@@ -2766,8 +2734,7 @@ If you need more context to finish a net, include a top-level
                         error=str(process_exc),
                         exc_info=True,
                     )
-                    processed = False
-                    await asyncio.sleep(5)  # Brief pause before retrying
+                    raise
                 
                 # Log after EVERY iteration to see if loop continues
                 logger.info(
