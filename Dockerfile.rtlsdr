@@ -1,0 +1,41 @@
+FROM python:3.11-slim
+
+# Install RTL-SDR dependencies and tools
+RUN apt-get update && apt-get install -y \
+    rtl-sdr \
+    librtlsdr-dev \
+    libusb-1.0-0-dev \
+    pkg-config \
+    build-essential \
+    openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create working directory
+WORKDIR /app
+
+# Copy RTL-SDR module
+COPY tsn_rtlsdr/ /app/tsn_rtlsdr/
+COPY tsn_common/ /app/tsn_common/
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    pyrtlsdr \
+    paramiko \
+    numpy \
+    && pip install --no-cache-dir -e .
+
+# Create recordings directory
+RUN mkdir -p /recordings
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    RTLSDR_FREQUENCY=146.72e6 \
+    RTLSDR_SAMPLE_RATE=240000 \
+    RTLSDR_GAIN=20.0 \
+    RTLSDR_SQUELCH=-40.0 \
+    RTLSDR_SQUELCH_DELAY=2.0 \
+    RTLSDR_OUTPUT_DIR=/recordings \
+    NODE_ID=rtlsdr
+
+# Run the RTL-SDR node
+CMD ["python", "-m", "tsn_rtlsdr.main"]

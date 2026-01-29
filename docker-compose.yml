@@ -119,6 +119,42 @@ services:
       - /storage:/node/archive
     restart: unless-stopped
 
+  # TSN RTL-SDR Node (Software Defined Radio)
+  tsn_rtlsdr:
+    build:
+      context: .
+      dockerfile: Dockerfile.rtlsdr
+    container_name: tsn_rtlsdr
+    profiles: ["rtlsdr"]  # Only start with --profile rtlsdr
+    privileged: true  # Required for USB device access
+    devices:
+      - /dev/bus/usb:/dev/bus/usb  # Grant access to USB devices
+    environment:
+      # Node identification
+      NODE_ID: ${RTLSDR_NODE_ID:-rtlsdr}
+      
+      # RTL-SDR configuration
+      RTLSDR_FREQUENCY: ${RTLSDR_FREQUENCY:-146.72e6}  # 146.72 MHz default
+      RTLSDR_SAMPLE_RATE: ${RTLSDR_SAMPLE_RATE:-240000}  # 240 kHz
+      RTLSDR_GAIN: ${RTLSDR_GAIN:-20.0}  # dB
+      RTLSDR_SQUELCH: ${RTLSDR_SQUELCH:--40.0}  # dBFS threshold
+      RTLSDR_SQUELCH_DELAY: ${RTLSDR_SQUELCH_DELAY:-2.0}  # seconds
+      RTLSDR_OUTPUT_DIR: /recordings
+      
+      # SFTP upload configuration
+      SFTP_HOST: ${SFTP_HOST:-192.168.0.104}
+      SFTP_PORT: ${SFTP_PORT:-22}
+      SFTP_USERNAME: ${SFTP_USERNAME:-tsn}
+      SFTP_PASSWORD: ${SFTP_PASSWORD}
+      SFTP_KEY_FILE: ${SFTP_KEY_FILE:-}
+      SFTP_REMOTE_DIR: ${SFTP_REMOTE_DIR:-/incoming}
+      SFTP_DELETE_AFTER_UPLOAD: ${SFTP_DELETE_AFTER_UPLOAD:-true}
+      SFTP_SCAN_INTERVAL: ${SFTP_SCAN_INTERVAL:-10}  # seconds
+    volumes:
+      - rtlsdr_recordings:/recordings
+      - ./ssh_keys:/root/.ssh:ro  # Optional: mount SSH keys for key-based auth
+    restart: unless-stopped
+
   # Prometheus (Optional Monitoring)
   prometheus:
     image: prom/prometheus:latest
@@ -157,6 +193,7 @@ volumes:
   storage_data:
   node_incoming:
   node_archive:
+  rtlsdr_recordings:
   prometheus_data:
   grafana_data:
 
