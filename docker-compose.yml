@@ -25,8 +25,8 @@ services:
       # Transcription
       TSN_WHISPER_BACKEND: faster-whisper
       TSN_WHISPER_MODEL: medium.en
-      TSN_WHISPER_DEVICE: cuda
-      TSN_WHISPER_MAX_CONCURRENT: 4
+      TSN_WHISPER_DEVICE: cpu
+      TSN_WHISPER_MAX_CONCURRENT: 1
       
       # vLLM
       TSN_VLLM_BASE_URL: ${TSN_VLLM_BASE_URL}
