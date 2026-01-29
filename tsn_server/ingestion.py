@@ -167,7 +167,8 @@ class IngestionService:
                     )
                     shutil.move(str(file_path), str(storage_path))
                 
-                # Create database record
+                # Create database record - set to QUEUED_TRANSCRIPTION immediately
+                # to avoid race condition where workers grab RECEIVED state before update
                 audio_file = AudioFile(
                     filename=file_path.name,
                     sha256=sha256,
@@ -177,15 +178,12 @@ class IngestionService:
                     channels=metadata.get("channels"),
                     node_id=inferred_node_id,
                     uploaded_at=datetime.now(timezone.utc),
-                    state=AudioFileState.RECEIVED,
+                    state=AudioFileState.QUEUED_TRANSCRIPTION,
                     metadata_=metadata,
                 )
                 
                 session.add(audio_file)
                 await session.flush()
-                
-                # Update state to queued
-                audio_file.state = AudioFileState.QUEUED_TRANSCRIPTION
                 
                 logger.info(
                     "file_ingested",
