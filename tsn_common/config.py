@@ -385,6 +385,52 @@ class StorageSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TSN_STORAGE_")
 
 
+class NetAutoDetectSettings(BaseSettings):
+    """Net auto-detection settings for streaming vLLM-heavy detection."""
+
+    enabled: bool = Field(default=True, description="Enable net auto-detection system")
+
+    # Micro-window evaluation
+    window_size_minutes: int = Field(default=4, description="Size of micro-windows for vLLM evaluation")
+    window_step_seconds: int = Field(default=45, description="Step size between windows (30-60s recommended)")
+    max_excerpts_per_window: int = Field(default=20, description="Max transcript excerpts per vLLM call")
+
+    # vLLM calling frequency (AGGRESSIVE)
+    vllm_call_interval_sec: float = Field(default=60.0, description="Target: 1 vLLM call per node per minute")
+    vllm_max_concurrent_per_node: int = Field(default=3, description="Max concurrent vLLM calls per node")
+    vllm_backpressure_threshold: int = Field(default=10, description="Coarsen step if backlog exceeds this")
+
+    # Candidate state machine thresholds
+    candidate_start_likelihood: int = Field(default=65, description="Min likelihood to start candidate")
+    candidate_start_consecutive_windows: int = Field(default=3, description="Windows above threshold to start")
+    candidate_extend_likelihood: int = Field(default=55, description="Min likelihood to extend candidate")
+    candidate_end_likelihood: int = Field(default=40, description="Max likelihood before ending candidate")
+    candidate_end_consecutive_windows: int = Field(default=4, description="Windows below threshold to end")
+    candidate_min_unique_callsigns: int = Field(default=6, description="Min callsigns for candidate promotion")
+
+    # Multi-pass vLLM use
+    boundary_refinement_interval_minutes: int = Field(
+        default=7, description="Minutes between boundary refinement vLLM passes"
+    )
+    roster_assist_interval_minutes: int = Field(
+        default=10, description="Minutes between roster assist vLLM passes"
+    )
+
+    # OpenAI verification (FINAL adjudication only)
+    openai_verify_enabled: bool = Field(default=True, description="Enable OpenAI final verification")
+    openai_min_confidence: int = Field(default=80, description="Min OpenAI confidence for VERIFIED status")
+    openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model for verification")
+    openai_max_evidence_excerpts: int = Field(
+        default=60, description="Max excerpts in OpenAI verification payload"
+    )
+
+    # Performance
+    orchestrator_poll_interval_sec: float = Field(default=5.0, description="How often orchestrator checks for work")
+    node_inactivity_minutes: int = Field(default=15, description="Minutes of silence before pausing node evaluation")
+
+    model_config = SettingsConfigDict(env_prefix="TSN_NET_AUTODETECT_")
+
+
 class MonitoringSettings(BaseSettings):
     """Health check and monitoring settings."""
 
@@ -406,6 +452,7 @@ class Settings(BaseSettings):
     transcription: TranscriptionSettings = Field(default_factory=TranscriptionSettings)
     vllm: VLLMSettings = Field(default_factory=VLLMSettings)
     analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
+    net_autodetect: NetAutoDetectSettings = Field(default_factory=NetAutoDetectSettings)
     qrz: QRZSettings = Field(default_factory=QRZSettings)
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)

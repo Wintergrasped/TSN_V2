@@ -125,11 +125,22 @@ class ServiceOrchestrator:
             worker_task = asyncio.create_task(analyzer.run_worker(i))
             self.tasks.append(worker_task)
 
+        # Net auto-detection orchestrator (NEW)
+        if self.settings.net_autodetect.enabled:
+            from tsn_server.services.net_autodetect import NetAutoDetectOrchestrator
+            
+            net_autodetect = NetAutoDetectOrchestrator()
+            autodetect_task = asyncio.create_task(net_autodetect.run())
+            self.tasks.append(autodetect_task)
+            
+            logger.info("net_autodetect_orchestrator_started")
+
         logger.info(
             "server_services_started",
             transcription_workers=self.settings.transcription.max_concurrent,
             extraction_workers=self.settings.vllm.max_concurrent,
             analysis_workers=self.settings.analysis.worker_count,
+            net_autodetect_enabled=self.settings.net_autodetect.enabled,
         )
 
     async def start_health_server(self) -> None:
