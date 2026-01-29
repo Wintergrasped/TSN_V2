@@ -135,12 +135,22 @@ class ServiceOrchestrator:
             
             logger.info("net_autodetect_orchestrator_started")
 
+        # Duplicate detection service (NEW)
+        from tsn_server.duplicate_detection import DuplicateDetectionService
+        
+        duplicate_detector = DuplicateDetectionService()
+        duplicate_task = asyncio.create_task(duplicate_detector.run())
+        self.tasks.append(duplicate_task)
+        
+        logger.info("duplicate_detection_service_started")
+
         logger.info(
             "server_services_started",
             transcription_workers=self.settings.transcription.max_concurrent,
             extraction_workers=self.settings.vllm.max_concurrent,
             analysis_workers=self.settings.analysis.worker_count,
             net_autodetect_enabled=self.settings.net_autodetect.enabled,
+            duplicate_detection_enabled=True,
         )
 
     async def start_health_server(self) -> None:
