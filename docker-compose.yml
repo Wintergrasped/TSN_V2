@@ -42,7 +42,7 @@ services:
       TSN_LOG_LEVEL: INFO
       TSN_LOG_FORMAT: json
     volumes:
-      - incoming_data:/incoming
+      - /home/wintergrasped/tsn_incoming:/incoming
       - storage_data:/storage
     ports:
       - "8080:8080"  # Health check & metrics

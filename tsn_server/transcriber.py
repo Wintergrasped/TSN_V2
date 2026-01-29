@@ -285,34 +285,73 @@ class TranscriptionPipeline:
         # Transcribe (outside transaction for long-running operation)
         transcription = await self.transcribe_file(audio_file)
         
-        # Update database
-        async with get_session() as session:
-            # Re-fetch audio file
-            audio_file = await session.get(AudioFile, audio_file.id)
-            
-            if transcription:
-                # Save transcription
-                session.add(transcription)
+        # Update database with retry logic for lock timeouts
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                async with get_session() as session:
+                    # Re-fetch audio file
+                    audio_file = await session.get(AudioFile, audio_file.id)
+                    
+                    if audio_file is None:
+                        logger.error("audio_file_disappeared", audio_file_id=str(audio_file.id))
+                        return True
+                    
+                    if transcription:
+                        # Save transcription
+                        session.add(transcription)
+                        
+                        # Update state
+                        audio_file.state = AudioFileState.TRANSCRIBED
+                        audio_file.state = AudioFileState.QUEUED_EXTRACTION
+                        
+                        logger.info(
+                            "file_transcribed_queued_extraction",
+                            audio_file_id=str(audio_file.id),
+                            transcription_id=str(transcription.id),
+                        )
+                    else:
+                        # Mark as failed
+                        audio_file.state = AudioFileState.FAILED_TRANSCRIPTION
+                        audio_file.retry_count += 1
+                        
+                        logger.error(
+                            "file_transcription_failed",
+                            audio_file_id=str(audio_file.id),
+                            retry_count=audio_file.retry_count,
+                        )
                 
-                # Update state
-                audio_file.state = AudioFileState.TRANSCRIBED
-                audio_file.state = AudioFileState.QUEUED_EXTRACTION
+                # Success - break retry loop
+                break
                 
-                logger.info(
-                    "file_transcribed_queued_extraction",
-                    audio_file_id=str(audio_file.id),
-                    transcription_id=str(transcription.id),
-                )
-            else:
-                # Mark as failed
-                audio_file.state = AudioFileState.FAILED_TRANSCRIPTION
-                audio_file.retry_count += 1
+            except Exception as e:
+                # Check if it's a database lock timeout
+                error_msg = str(e)
+                is_lock_timeout = "Lock wait timeout" in error_msg or "1205" in error_msg
                 
-                logger.error(
-                    "file_transcription_failed",
-                    audio_file_id=str(audio_file.id),
-                    retry_count=audio_file.retry_count,
-                )
+                if is_lock_timeout and attempt < max_retries - 1:
+                    # Retry with exponential backoff
+                    wait_time = retry_delay * (2 ** attempt)
+                    logger.warning(
+                        "database_lock_timeout_retry",
+                        audio_file_id=str(audio_file.id),
+                        attempt=attempt + 1,
+                        wait_time=wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Give up or different error
+                    logger.error(
+                        "database_update_failed",
+                        audio_file_id=str(audio_file.id),
+                        error=error_msg,
+                        is_lock_timeout=is_lock_timeout,
+                        exc_info=True,
+                    )
+                    # Don't return False - we did process it, just couldn't update DB
+                    break
         
         return True
 
@@ -337,17 +376,24 @@ class TranscriptionPipeline:
                 logger.info("transcription_worker_cancelled", worker_id=worker_id)
                 break
             except Exception as e:
+                error_msg = str(e)
+                is_lock_timeout = "Lock wait timeout" in error_msg or "1205" in error_msg
+                
                 logger.error(
                     "transcription_worker_error",
                     worker_id=worker_id,
-                    error=str(e),
+                    error=error_msg,
+                    is_lock_timeout=is_lock_timeout,
                     exc_info=True,
                 )
-                await asyncio.sleep(5.0)
+                
+                # Longer backoff for lock timeouts to reduce contention
+                await asyncio.sleep(10.0 if is_lock_timeout else 5.0)
 
 
 async def main() -> None:
     """Main entry point for transcription pipeline."""
+    import sqlalchemy.exc
     from tsn_common import setup_logging
     
     settings = get_settings()
