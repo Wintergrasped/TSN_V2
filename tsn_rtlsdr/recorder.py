@@ -57,6 +57,7 @@ class RTLSDRRecorder:
         self.current_recording: Optional[list] = None
         self.silence_start: Optional[float] = None
         self.recording_start: Optional[datetime] = None
+        self.last_power: Optional[float] = None  # Track last signal power for web UI
 
     async def initialize_sdr(self):
         """Initialize RTL-SDR device."""
@@ -189,6 +190,7 @@ class RTLSDRRecorder:
         
         # Calculate signal power
         power = self.calculate_power(samples)
+        self.last_power = power  # Update for web UI
         
         # Check if signal exceeds squelch threshold
         signal_present = power > self.squelch_threshold

@@ -141,6 +141,9 @@ services:
       RTLSDR_SQUELCH_DELAY: ${RTLSDR_SQUELCH_DELAY:-2.0}  # seconds
       RTLSDR_OUTPUT_DIR: /recordings
       
+      # Web control panel
+      RTLSDR_WEB_PORT: ${RTLSDR_WEB_PORT:-8585}
+      
       # SFTP upload configuration
       SFTP_HOST: ${SFTP_HOST:-192.168.0.104}
       SFTP_PORT: ${SFTP_PORT:-22}
@@ -153,6 +156,8 @@ services:
     volumes:
       - rtlsdr_recordings:/recordings
       - ./ssh_keys:/root/.ssh:ro  # Optional: mount SSH keys for key-based auth
+    ports:
+      - "${RTLSDR_WEB_PORT:-8585}:8585"  # Web control panel
     restart: unless-stopped
 
   # Prometheus (Optional Monitoring)

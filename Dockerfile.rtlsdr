@@ -20,7 +20,8 @@ COPY tsn_rtlsdr/ /app/tsn_rtlsdr/
 RUN pip install --no-cache-dir \
     pyrtlsdr \
     paramiko \
-    numpy
+    numpy \
+    aiohttp
 
 # Create recordings directory
 RUN mkdir -p /recordings

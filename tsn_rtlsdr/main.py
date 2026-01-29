@@ -7,6 +7,7 @@ import sys
 
 from tsn_rtlsdr.recorder import RTLSDRRecorder
 from tsn_rtlsdr.uploader import SFTPUploader
+from tsn_rtlsdr.web_panel import RTLSDRWebPanel
 
 
 logger = logging.getLogger(__name__)
@@ -15,16 +16,18 @@ logger = logging.getLogger(__name__)
 class RTLSDRNode:
     """Orchestrates RTL-SDR recording and SFTP uploading."""
 
-    def __init__(self, recorder: RTLSDRRecorder, uploader: SFTPUploader):
+    def __init__(self, recorder: RTLSDRRecorder, uploader: SFTPUploader, web_panel: RTLSDRWebPanel):
         """
         Initialize node orchestrator.
 
         Args:
             recorder: RTL-SDR recorder instance
             uploader: SFTP uploader instance
+            web_panel: Web control panel instance
         """
         self.recorder = recorder
         self.uploader = uploader
+        self.web_panel = web_panel
         self.tasks = []
 
     async def run(self):
@@ -34,8 +37,9 @@ class RTLSDRNode:
         # Create concurrent tasks
         recorder_task = asyncio.create_task(self.recorder.run())
         uploader_task = asyncio.create_task(self.uploader.run())
+        web_panel_task = asyncio.create_task(self.web_panel.run())
 
-        self.tasks = [recorder_task, uploader_task]
+        self.tasks = [recorder_task, uploader_task, web_panel_task]
 
         try:
             # Wait for both tasks
@@ -91,8 +95,14 @@ async def main():
         delete_after_upload=os.getenv("SFTP_DELETE_AFTER_UPLOAD", "true").lower() == "true",
     )
 
+    # Web panel configuration
+    web_panel = RTLSDRWebPanel(
+        recorder=recorder,
+        port=int(os.getenv("RTLSDR_WEB_PORT", "8585")),
+    )
+
     # Create and run node
-    node = RTLSDRNode(recorder, uploader)
+    node = RTLSDRNode(recorder, uploader, web_panel)
 
     # Register signal handlers
     signal.signal(signal.SIGINT, node.shutdown)
