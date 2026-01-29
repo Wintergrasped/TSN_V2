@@ -15,14 +15,12 @@ WORKDIR /app
 
 # Copy RTL-SDR module
 COPY tsn_rtlsdr/ /app/tsn_rtlsdr/
-COPY tsn_common/ /app/tsn_common/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
     pyrtlsdr \
     paramiko \
-    numpy \
-    && pip install --no-cache-dir -e .
+    numpy
 
 # Create recordings directory
 RUN mkdir -p /recordings
