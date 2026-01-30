@@ -1310,25 +1310,35 @@ If you need more context to finish a net, include a top-level
         if not audio_ids:
             return
         async with get_session() as session:
-            for audio_id in audio_ids:
-                record = await session.get(AudioFile, audio_id)
-                if not record:
-                    continue
-                if failed:
-                    record.state = AudioFileState.FAILED_ANALYSIS
-                    record.retry_count += 1
-                else:
-                    record.state = AudioFileState.ANALYZED
-                    record.state = AudioFileState.COMPLETE
+            # Use no_autoflush to prevent premature flush during queries
+            with session.no_autoflush:
+                for audio_id in audio_ids:
+                    record = await session.get(AudioFile, audio_id)
+                    if not record:
+                        continue
+                    if failed:
+                        record.state = AudioFileState.FAILED_ANALYSIS
+                        record.retry_count += 1
+                    else:
+                        record.state = AudioFileState.ANALYZED
+                        record.state = AudioFileState.COMPLETE
+            
+            # Now flush all changes at once
+            await session.flush()
 
     async def _release_unprocessed(self, audio_ids: Sequence[uuid.UUID]) -> None:
         if not audio_ids:
             return
         async with get_session() as session:
-            for audio_id in audio_ids:
-                record = await session.get(AudioFile, audio_id)
-                if record:
-                    record.state = AudioFileState.QUEUED_ANALYSIS
+            # Use no_autoflush to prevent premature flush during queries
+            with session.no_autoflush:
+                for audio_id in audio_ids:
+                    record = await session.get(AudioFile, audio_id)
+                    if record:
+                        record.state = AudioFileState.QUEUED_ANALYSIS
+            
+            # Now flush all changes at once
+            await session.flush()
 
     async def _get_or_create_callsign(self, session, raw_callsign: str) -> Callsign | None:
         normalized = normalize_callsign(raw_callsign)
