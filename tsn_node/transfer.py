@@ -217,21 +217,55 @@ class TransferAgent:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 archive_path = archive_dir / f"{file_path.stem}_{timestamp}{file_path.suffix}"
             
+            # Try rename first (fast, same filesystem)
             try:
                 file_path.rename(archive_path)
-            except OSError as exc:
-                logger.warning(
-                    "archive_rename_failed_using_copy",
+                logger.info(
+                    "file_archived",
                     filename=file_path.name,
-                    error=str(exc),
+                    archive_path=str(archive_path),
+                    method="rename",
                 )
-                shutil.move(str(file_path), str(archive_path))
+                return
+            except OSError as rename_exc:
+                # Cross-device link or permission issue
+                logger.debug(
+                    "archive_rename_failed_trying_copy",
+                    filename=file_path.name,
+                    error=str(rename_exc),
+                )
             
-            logger.info(
-                "file_archived",
-                filename=file_path.name,
-                archive_path=str(archive_path),
-            )
+            # Try copy+delete (works across filesystems)
+            try:
+                shutil.copy2(str(file_path), str(archive_path))
+                logger.info(
+                    "file_archived",
+                    filename=file_path.name,
+                    archive_path=str(archive_path),
+                    method="copy",
+                )
+                
+                # Try to delete original
+                try:
+                    file_path.unlink()
+                except OSError as delete_exc:
+                    # Read-only filesystem or permission issue
+                    logger.warning(
+                        "archive_source_delete_failed",
+                        filename=file_path.name,
+                        error=str(delete_exc),
+                        note="File archived but source could not be deleted (read-only filesystem?)",
+                    )
+                return
+                
+            except Exception as copy_exc:
+                logger.error(
+                    "archive_copy_failed",
+                    filename=file_path.name,
+                    error=str(copy_exc),
+                )
+                raise
+                
         except Exception as e:
             logger.error(
                 "file_archive_failed",
