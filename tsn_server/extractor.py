@@ -22,6 +22,7 @@ from tsn_common.models import (
     Transcription,
     ValidationMethod,
 )
+from tsn_common.resource_lock import get_resource_lock
 from tsn_common.utils import normalize_callsign
 from tsn_server.qrz_client import get_qrz_client
 
@@ -100,6 +101,10 @@ class CallsignExtractor:
         if not to_validate:
             return {cs: True for cs in callsigns}
         
+        # Acquire vLLM lock (waits for transcription + cooldown)
+        resource_lock = get_resource_lock()
+        await resource_lock.acquire_vllm()
+        
         try:
             # Build prompt
             callsign_list = ", ".join(to_validate)
@@ -173,6 +178,12 @@ Respond with JSON only:
             )
             # Fall back to regex-only validation
             return {cs: True for cs in callsigns}
+        
+        finally:
+            resource_lock.release_vllm()
+        
+        finally:
+            resource_lock.release_vllm()
 
     async def get_or_create_callsign(
         self,

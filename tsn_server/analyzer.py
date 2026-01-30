@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from tsn_common.config import AnalysisSettings, VLLMSettings, get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
+from tsn_common.resource_lock import get_resource_lock
 from tsn_common.models import (
     AiRunLog,
     AnalysisAudit,
@@ -1002,8 +1003,13 @@ class TranscriptAnalyzer:
         extra_metadata: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Call the vLLM server with automatic loopback fallback and deep logging."""
-
-        def candidate_urls() -> list[str]:
+        
+        # Acquire vLLM lock (waits for transcription + cooldown)
+        resource_lock = get_resource_lock()
+        await resource_lock.acquire_vllm()
+        
+        try:
+            def candidate_urls() -> list[str]:
             urls = [self.vllm_settings.base_url.rstrip("/")]
             fallback = "http://127.0.0.1:8001"
             if fallback not in urls:
@@ -1174,6 +1180,9 @@ class TranscriptAnalyzer:
         )
         logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
         raise RuntimeError("All vLLM endpoints failed")
+        
+        finally:
+            resource_lock.release_vllm()
 
     def _build_prompt(self, context_block: str) -> str:
         """Build the instruction payload referencing the attached context."""

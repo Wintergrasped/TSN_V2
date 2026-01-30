@@ -8,6 +8,7 @@ from sqlalchemy import select
 from tsn_common.config import get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
+from tsn_common.resource_lock import get_resource_lock
 from tsn_common.models import NetCandidate, CandidateStatus
 from tsn_server.analyzer import TranscriptAnalyzer
 from tsn_server.services.net_autodetect.window_builder import (
