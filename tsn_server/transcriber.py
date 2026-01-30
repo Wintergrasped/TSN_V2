@@ -359,7 +359,7 @@ class TranscriptionPipeline:
                     # Don't return False - we did process it, just couldn't update DB
                     break
         
-            return True
+        return True
         
         finally:
             # Always release lock
