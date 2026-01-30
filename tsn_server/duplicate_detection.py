@@ -13,6 +13,7 @@ from tsn_common.config import get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
 from tsn_common.models import AudioFile, AudioFileState, Transcription
+from tsn_common.resource_lock import get_resource_lock
 from tsn_server.analyzer import TranscriptAnalyzer
 
 logger = get_logger(__name__)
@@ -289,6 +290,15 @@ Respond STRICTLY with JSON:
         """
         Scan recent transcriptions for duplicates (background task).
         """
+        # Check if vLLM is blocked before scanning
+        resource_lock = get_resource_lock()
+        if resource_lock.is_vllm_blocked():
+            logger.debug(
+                "duplicate_scan_skipped_vllm_blocked",
+                cooldown_remaining=resource_lock.get_ingestion_cooldown_remaining(),
+            )
+            return
+        
         try:
             async with get_session() as session:
                 # Get recently transcribed files that haven't been checked

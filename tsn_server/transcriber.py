@@ -19,6 +19,7 @@ from tsn_common.models import (
     Transcription,
     TranscriptionBackend,
 )
+from tsn_common.resource_lock import get_resource_lock
 
 logger = get_logger(__name__)
 
@@ -271,16 +272,21 @@ class TranscriptionPipeline:
         Returns:
             True if file was processed, False if queue empty
         """
-        async with get_session() as session:
-            # Get next file
-            audio_file = await self.get_next_file(session)
-            
-            if audio_file is None:
-                return False
-            
-            # Update state to transcribing
-            audio_file.state = AudioFileState.TRANSCRIBING
-            await session.flush()
+        # Acquire transcription lock (blocks vLLM)
+        resource_lock = get_resource_lock()
+        await resource_lock.acquire_transcription()
+        
+        try:
+            async with get_session() as session:
+                # Get next file
+                audio_file = await self.get_next_file(session)
+                
+                if audio_file is None:
+                    return False
+                
+                # Update state to transcribing
+                audio_file.state = AudioFileState.TRANSCRIBING
+                await session.flush()
         
         # Transcribe (outside transaction for long-running operation)
         transcription = await self.transcribe_file(audio_file)
@@ -353,7 +359,11 @@ class TranscriptionPipeline:
                     # Don't return False - we did process it, just couldn't update DB
                     break
         
-        return True
+            return True
+        
+        finally:
+            # Always release lock
+            resource_lock.release_transcription()
 
     async def run_worker(self, worker_id: int = 0) -> None:
         """
