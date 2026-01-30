@@ -144,6 +144,15 @@ class ServiceOrchestrator:
         
         logger.info("duplicate_detection_service_started")
 
+        # Stuck file recovery service (NEW)
+        from tsn_server.stuck_file_recovery import StuckFileRecovery
+        
+        stuck_recovery = StuckFileRecovery()
+        stuck_recovery_task = asyncio.create_task(stuck_recovery.run())
+        self.tasks.append(stuck_recovery_task)
+        
+        logger.info("stuck_file_recovery_service_started")
+
         logger.info(
             "server_services_started",
             transcription_workers=self.settings.transcription.max_concurrent,
@@ -151,6 +160,7 @@ class ServiceOrchestrator:
             analysis_workers=self.settings.analysis.worker_count,
             net_autodetect_enabled=self.settings.net_autodetect.enabled,
             duplicate_detection_enabled=True,
+            stuck_file_recovery_enabled=True,
         )
 
     async def start_health_server(self) -> None:
