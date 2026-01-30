@@ -203,6 +203,17 @@ class NetAutoDetectOrchestrator:
         
         try:
             while True:
+                # Check if vLLM operations are blocked
+                resource_lock = get_resource_lock()
+                if resource_lock.is_vllm_blocked():
+                    remaining = resource_lock.get_ingestion_cooldown_remaining()
+                    logger.debug(
+                        "net_autodetect_paused_vllm_blocked",
+                        cooldown_remaining=remaining,
+                    )
+                    await asyncio.sleep(5.0)
+                    continue
+                
                 try:
                     await self.run_cycle()
                 except Exception as e:
