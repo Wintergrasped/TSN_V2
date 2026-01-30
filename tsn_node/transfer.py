@@ -264,13 +264,15 @@ class TransferAgent:
                     filename=file_path.name,
                     error=str(copy_exc),
                 )
-                raise
+                # Don't raise - we already uploaded successfully
+                # Worst case: file remains in incoming and gets re-uploaded (duplicate detection will handle)
                 
         except Exception as e:
             logger.error(
                 "file_archive_failed",
                 filename=file_path.name,
                 error=str(e),
+                note="File uploaded successfully but archiving failed",
             )
 
 
@@ -281,33 +283,53 @@ async def transfer_worker(
     """
     Transfer worker - consumes files from queue and uploads them.
     
+    Resilient design: Never crashes, always continues processing queue.
+    
     Args:
         queue: Queue of files to upload
         settings: Node settings
     """
     agent = TransferAgent(settings)
     
-    try:
-        while True:
+    while True:
+        try:
             file_path = await queue.get()
             
             try:
                 success = await agent.upload_file(file_path)
                 
                 if not success:
-                    logger.error("transfer_failed", filename=file_path.name)
+                    logger.error(
+                        "transfer_failed",
+                        filename=file_path.name,
+                        note="Upload failed after retries",
+                    )
                     
             except Exception as e:
                 logger.error(
-                    "transfer_worker_error",
+                    "transfer_worker_file_error",
                     filename=file_path.name,
                     error=str(e),
+                    exc_info=True,
                 )
             finally:
                 queue.task_done()
                 
-    finally:
-        await agent.disconnect()
+        except asyncio.CancelledError:
+            logger.info("transfer_worker_cancelled")
+            break
+        except Exception as e:
+            # Catch queue.get() or other fatal errors
+            logger.error(
+                "transfer_worker_fatal_error",
+                error=str(e),
+                exc_info=True,
+                note="Worker continuing despite error",
+            )
+            await asyncio.sleep(1.0)  # Brief pause before retry
+    
+    # Cleanup
+    await agent.disconnect()
 
 
 async def main() -> None:
