@@ -71,10 +71,10 @@ class ServiceOrchestrator:
         watcher_task = asyncio.create_task(watcher.watch_loop())
         self.tasks.append(watcher_task)
 
-        # Start transfer workers
+        # Start transfer workers (pass watcher for file cleanup)
         for i in range(self.settings.node.transfer_workers):
             worker_task = asyncio.create_task(
-                transfer_worker(watcher.transfer_queue, self.settings.node)
+                transfer_worker(watcher.transfer_queue, self.settings.node, watcher)
             )
             self.tasks.append(worker_task)
 

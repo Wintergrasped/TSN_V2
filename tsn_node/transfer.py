@@ -5,7 +5,7 @@ Transfer agent - uploads files to server via SFTP with retry logic.
 import asyncio
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import paramiko
 from paramiko import SSHClient, SFTPClient
@@ -13,6 +13,9 @@ from paramiko import SSHClient, SFTPClient
 from tsn_common.config import NodeSettings, get_settings
 from tsn_common.logging import get_logger
 from tsn_common.utils import compute_sha256
+
+if TYPE_CHECKING:
+    from tsn_node.watcher import FileWatcher
 
 logger = get_logger(__name__)
 
@@ -279,6 +282,7 @@ class TransferAgent:
 async def transfer_worker(
     queue: asyncio.Queue[Path],
     settings: NodeSettings,
+    watcher: Optional['FileWatcher'] = None,
 ) -> None:
     """
     Transfer worker - consumes files from queue and uploads them.
@@ -288,6 +292,7 @@ async def transfer_worker(
     Args:
         queue: Queue of files to upload
         settings: Node settings
+        watcher: Optional FileWatcher instance to mark files processed/failed
     """
     agent = TransferAgent(settings)
     
@@ -298,12 +303,19 @@ async def transfer_worker(
             try:
                 success = await agent.upload_file(file_path)
                 
-                if not success:
+                if success:
+                    # Mark file as successfully processed
+                    if watcher:
+                        watcher.mark_file_processed(file_path)
+                else:
                     logger.error(
                         "transfer_failed",
                         filename=file_path.name,
                         note="Upload failed after retries",
                     )
+                    # Mark file as failed so it can be retried
+                    if watcher:
+                        watcher.mark_file_failed(file_path)
                     
             except Exception as e:
                 logger.error(
@@ -312,6 +324,9 @@ async def transfer_worker(
                     error=str(e),
                     exc_info=True,
                 )
+                # Mark file as failed on exception
+                if watcher:
+                    watcher.mark_file_failed(file_path)
             finally:
                 queue.task_done()
                 
@@ -346,8 +361,8 @@ async def main() -> None:
     # Create test queue
     queue: asyncio.Queue[Path] = asyncio.Queue()
     
-    # Start worker
-    worker_task = asyncio.create_task(transfer_worker(queue, settings.node))
+    # Start worker (without watcher for testing)
+    worker_task = asyncio.create_task(transfer_worker(queue, settings.node, watcher=None))
     
     # Wait for worker (would run forever in production)
     await worker_task
