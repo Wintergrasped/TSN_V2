@@ -461,6 +461,31 @@ class MonitoringSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TSN_MONITORING_")
 
 
+class SystemLoadSettings(BaseSettings):
+    """System load guard configuration."""
+
+    enabled: bool = Field(default=True, description="Enable system load monitor")
+    cpu_percent_threshold: float = Field(
+        default=85.0,
+        description="CPU percent that triggers load shedding",
+    )
+    memory_percent_threshold: float = Field(
+        default=92.0,
+        description="Memory percent that triggers load shedding",
+    )
+    check_interval_sec: float = Field(default=5.0, description="How often to sample load")
+    pause_duration_sec: int = Field(
+        default=30,
+        description="How long to pause vLLM activity once load is high",
+    )
+    breach_samples_required: int = Field(
+        default=3,
+        description="Consecutive high-load samples required before pausing",
+    )
+
+    model_config = SettingsConfigDict(env_prefix="TSN_LOAD_")
+
+
 class Settings(BaseSettings):
     """Root settings object."""
 
@@ -478,6 +503,7 @@ class Settings(BaseSettings):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     metrics: MetricsSettings = Field(default_factory=MetricsSettings)
     monitoring: MonitoringSettings = Field(default_factory=MonitoringSettings)
+    system_load: SystemLoadSettings = Field(default_factory=SystemLoadSettings)
 
     # Environment
     environment: Literal["development", "staging", "production"] = "development"

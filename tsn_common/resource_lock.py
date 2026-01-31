@@ -28,6 +28,8 @@ class ResourceLock:
         self._transcription_active = False
         self._last_ingestion_time: Optional[datetime] = None
         self._ingestion_cooldown_minutes = 3
+        self._system_pause_until: Optional[datetime] = None
+        self._system_pause_reason: Optional[str] = None
         
         logger.info("resource_lock_initialized")
     
@@ -79,6 +81,20 @@ class ResourceLock:
                     )
                     await asyncio.sleep(5.0)
                     continue
+
+            if self._system_pause_until:
+                now = datetime.now(timezone.utc)
+                if now < self._system_pause_until:
+                    remaining = int((self._system_pause_until - now).total_seconds())
+                    logger.debug(
+                        "vllm_waiting_for_system_pause",
+                        remaining_seconds=remaining,
+                        reason=self._system_pause_reason,
+                    )
+                    await asyncio.sleep(2.0)
+                    continue
+                self._system_pause_until = None
+                self._system_pause_reason = None
             
             # Safe to acquire
             break
@@ -124,7 +140,42 @@ class ResourceLock:
         if self._transcription_active:
             return True
         
-        return self.get_ingestion_cooldown_remaining() > 0
+        if self.get_ingestion_cooldown_remaining() > 0:
+            return True
+
+        return self.get_system_pause_remaining() > 0
+
+    def enter_system_pause(self, duration_sec: int, reason: str | None = None) -> None:
+        """Pause vLLM operations for a duration when system load is high."""
+        now = datetime.now(timezone.utc)
+        pause_until = now + timedelta(seconds=max(1, duration_sec))
+        if not self._system_pause_until or pause_until > self._system_pause_until:
+            self._system_pause_until = pause_until
+        self._system_pause_reason = reason
+
+        logger.warning(
+            "system_pause_engaged",
+            duration_sec=duration_sec,
+            reason=reason,
+            pause_until=self._system_pause_until.isoformat() if self._system_pause_until else None,
+        )
+
+    def get_system_pause_remaining(self) -> int:
+        if not self._system_pause_until:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        if now >= self._system_pause_until:
+            self._system_pause_until = None
+            self._system_pause_reason = None
+            return 0
+
+        return int((self._system_pause_until - now).total_seconds())
+
+    def get_system_pause_reason(self) -> Optional[str]:
+        if self.get_system_pause_remaining() <= 0:
+            return None
+        return self._system_pause_reason
 
 
 # Global singleton instance

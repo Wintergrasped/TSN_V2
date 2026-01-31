@@ -296,6 +296,7 @@ Respond STRICTLY with JSON:
             logger.debug(
                 "duplicate_scan_skipped_vllm_blocked",
                 cooldown_remaining=resource_lock.get_ingestion_cooldown_remaining(),
+                pause_reason=resource_lock.get_system_pause_reason(),
             )
             return
         

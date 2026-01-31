@@ -100,6 +100,7 @@ class ServiceOrchestrator:
         from tsn_server.analyzer import TranscriptAnalyzer
         from tsn_server.extractor import CallsignExtractor
         from tsn_server.ingestion import IngestionService
+        from tsn_server.system_load_monitor import SystemLoadMonitor
         from tsn_server.transcriber import TranscriptionPipeline
 
         # Ingestion service
@@ -109,6 +110,11 @@ class ServiceOrchestrator:
         )
         ingestion_task = asyncio.create_task(ingestion.run_loop())
         self.tasks.append(ingestion_task)
+
+        if self.settings.system_load.enabled:
+            load_monitor = SystemLoadMonitor(self.settings.system_load)
+            load_task = asyncio.create_task(load_monitor.run())
+            self.tasks.append(load_task)
 
         # Transcription workers
         transcriber = TranscriptionPipeline(

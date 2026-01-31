@@ -41,6 +41,7 @@ dependencies = [
     # Logging & Monitoring
     "structlog>=24.1",
     "prometheus-client>=0.19",
+    "psutil>=5.9",
     
     # Audio Processing
     "faster-whisper>=0.10",
