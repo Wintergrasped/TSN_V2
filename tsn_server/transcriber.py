@@ -3,9 +3,13 @@ Transcription pipeline - processes audio files with Whisper.
 """
 
 import asyncio
+import contextlib
+import os
+import shutil
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +24,7 @@ from tsn_common.models import (
     TranscriptionBackend,
 )
 from tsn_common.resource_lock import get_resource_lock
+from tsn_server.storage_guard import StorageGuard
 
 logger = get_logger(__name__)
 
@@ -38,18 +43,27 @@ class TranscriptionPipeline:
         self,
         settings: TranscriptionSettings,
         storage_dir: Path,
+        archive_dirs: Iterable[Path] | None = None,
+        storage_guard: StorageGuard | None = None,
     ):
         self.settings = settings
         self.storage_dir = storage_dir
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self.archive_dirs: tuple[Path, ...] = tuple(Path(p) for p in (archive_dirs or ()))
+        self.storage_guard = storage_guard
         self.model = None
         self.model_device: Optional[str] = None
         self.model_compute_type: Optional[str] = None
+        self._missing_file_streak = 0
+        self._missing_files_blocked_until: Optional[datetime] = None
         
         logger.info(
             "transcription_pipeline_initialized",
             backend=settings.backend,
             model=settings.model,
             device=settings.device,
+            archive_dir_count=len(self.archive_dirs),
+            storage_guard_enabled=bool(storage_guard),
         )
 
     def _cuda_available(self) -> bool:
@@ -94,6 +108,12 @@ class TranscriptionPipeline:
         
         if self.settings.backend == "faster-whisper":
             from faster_whisper import WhisperModel
+
+            if self.settings.hf_cache_dir:
+                cache_dir = self.settings.hf_cache_dir
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                os.environ.setdefault("HF_HOME", str(cache_dir))
+                os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(cache_dir / "hub"))
 
             device, compute_type = self._resolve_runtime()
 
@@ -152,12 +172,20 @@ class TranscriptionPipeline:
         file_path = self.storage_dir / audio_file.filename
         
         if not file_path.exists():
-            logger.error(
-                "transcribe_file_not_found",
-                audio_file_id=str(audio_file.id),
-                filename=audio_file.filename,
-            )
-            return None
+            restored_file = self._restore_from_archive(audio_file.filename)
+            if restored_file and restored_file.exists():
+                file_path = restored_file
+            else:
+                logger.error(
+                    "transcribe_file_not_found",
+                    audio_file_id=str(audio_file.id),
+                    filename=audio_file.filename,
+                    tried_archive=bool(self.archive_dirs),
+                )
+                self._note_missing_file()
+                return None
+
+        self._reset_missing_file_streak()
         
         try:
             logger.info(
@@ -212,6 +240,99 @@ class TranscriptionPipeline:
                 exc_info=True,
             )
             return None
+
+    def _restore_from_archive(self, filename: str) -> Optional[Path]:
+        if not self.archive_dirs:
+            return None
+
+        target_path = self.storage_dir / filename
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.error(
+                "archive_restore_target_unavailable",
+                filename=filename,
+                target_dir=str(target_path.parent),
+                error=str(exc),
+            )
+            if self.storage_guard:
+                self.storage_guard.mark_unavailable(
+                    source="transcriber_restore_target",
+                    error=str(exc),
+                )
+            return None
+
+        for archive_dir in self.archive_dirs:
+            try:
+                archive_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # Directory may be read-only; skip creation attempt failures silently
+                pass
+
+            candidate = archive_dir / filename
+            if not candidate.exists():
+                continue
+
+            if target_path.exists():
+                return target_path
+
+            try:
+                shutil.copy2(candidate, target_path)
+            except Exception as exc:
+                logger.error(
+                    "archive_restore_copy_failed",
+                    filename=filename,
+                    source=str(candidate),
+                    destination=str(target_path),
+                    error=str(exc),
+                )
+                if self.storage_guard:
+                    self.storage_guard.mark_unavailable(
+                        source="transcriber_restore_copy",
+                        error=str(exc),
+                    )
+                continue
+
+            logger.warning(
+                "transcription_file_restored_from_archive",
+                filename=filename,
+                source=str(candidate),
+                destination=str(target_path),
+            )
+            return target_path
+
+        return None
+
+    def _note_missing_file(self) -> None:
+        self._missing_file_streak += 1
+        threshold = max(1, self.settings.missing_file_error_threshold)
+        if self._missing_file_streak >= threshold:
+            backoff = max(10, self.settings.missing_file_backoff_sec)
+            self._missing_files_blocked_until = datetime.now(timezone.utc) + timedelta(seconds=backoff)
+            logger.error(
+                "transcription_missing_files_backoff",
+                streak=self._missing_file_streak,
+                backoff_seconds=backoff,
+                storage_dir=str(self.storage_dir),
+            )
+
+    def _reset_missing_file_streak(self) -> None:
+        if self._missing_file_streak:
+            logger.info(
+                "transcription_missing_files_recovered",
+                streak=self._missing_file_streak,
+            )
+        self._missing_file_streak = 0
+        self._missing_files_blocked_until = None
+
+    def _missing_file_backoff_remaining(self) -> int:
+        if not self._missing_files_blocked_until:
+            return 0
+        now = datetime.now(timezone.utc)
+        if now >= self._missing_files_blocked_until:
+            self._missing_files_blocked_until = None
+            return 0
+        return int((self._missing_files_blocked_until - now).total_seconds())
 
     def _transcribe_sync(self, file_path: str) -> str:
         """
@@ -376,6 +497,21 @@ class TranscriptionPipeline:
         
         while True:
             try:
+                if self.storage_guard and not self.storage_guard.is_available():
+                    await self.storage_guard.wait_until_available(f"transcription_worker_{worker_id}")
+                    continue
+
+                backoff_remaining = self._missing_file_backoff_remaining()
+                if backoff_remaining > 0:
+                    logger.warning(
+                        "transcription_worker_backing_off_missing_files",
+                        worker_id=worker_id,
+                        remaining_seconds=backoff_remaining,
+                        storage_dir=str(self.storage_dir),
+                    )
+                    await asyncio.sleep(min(backoff_remaining, 5))
+                    continue
+
                 processed = await self.process_one()
                 
                 if not processed:
@@ -409,10 +545,19 @@ async def main() -> None:
     settings = get_settings()
     setup_logging(settings.logging)
     
-    storage_dir = Path("/path/to/storage")  # TODO: from config
+    storage_dir = settings.storage.base_path
+    storage_guard = StorageGuard(settings.storage)
+    guard_task: Optional[asyncio.Task] = None
+    if storage_guard.enabled:
+        guard_task = asyncio.create_task(storage_guard.run())
     
     # Create pipeline
-    pipeline = TranscriptionPipeline(settings.transcription, storage_dir)
+    pipeline = TranscriptionPipeline(
+        settings.transcription,
+        storage_dir,
+        archive_dirs=settings.storage.archive_dirs,
+        storage_guard=storage_guard,
+    )
     
     # Run multiple workers
     workers = [
@@ -422,6 +567,11 @@ async def main() -> None:
     
     # Wait for all workers
     await asyncio.gather(*workers)
+
+    if guard_task:
+        guard_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await guard_task
 
 
 if __name__ == "__main__":

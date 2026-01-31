@@ -28,6 +28,8 @@ try:
 except ImportError:
     REPAIR_AVAILABLE = False
 
+from tsn_server.storage_guard import StorageGuard
+
 logger = get_logger(__name__)
 
 
@@ -43,12 +45,18 @@ class IngestionService:
     5. Update state to queued_transcription
     """
 
-    def __init__(self, server_settings: ServerSettings, storage_dir: Path):
+    def __init__(
+        self,
+        server_settings: ServerSettings,
+        storage_dir: Path,
+        storage_guard: StorageGuard | None = None,
+    ):
         self.settings = server_settings
         self.incoming_dir = server_settings.incoming_dir
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.poll_interval = server_settings.poll_interval_sec
+        self.storage_guard = storage_guard
         self._startup_repair_done = False
         
         logger.info(
@@ -166,7 +174,21 @@ class IngestionService:
                         filename=file_path.name,
                         error=str(exc),
                     )
-                    shutil.move(str(file_path), str(storage_path))
+                    try:
+                        shutil.move(str(file_path), str(storage_path))
+                    except Exception as copy_exc:
+                        logger.error(
+                            "storage_copy_failed",
+                            filename=file_path.name,
+                            destination=str(storage_path),
+                            error=str(copy_exc),
+                        )
+                        if self.storage_guard:
+                            self.storage_guard.mark_unavailable(
+                                source="ingestion_move",
+                                error=str(copy_exc),
+                            )
+                        return None
                 
                 # Create database record - set to QUEUED_TRANSCRIPTION immediately
                 # to avoid race condition where workers grab RECEIVED state before update
@@ -283,6 +305,10 @@ class IngestionService:
         
         while True:
             try:
+                if self.storage_guard and not self.storage_guard.is_available():
+                    await self.storage_guard.wait_until_available("ingestion_loop")
+                    continue
+
                 await self.process_incoming_files()
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:

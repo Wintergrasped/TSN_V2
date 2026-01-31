@@ -10,6 +10,7 @@ from typing import List
 
 from tsn_common.config import get_settings
 from tsn_common.logging import get_logger, setup_logging
+from tsn_server.storage_guard import StorageGuard
 
 logger = get_logger(__name__)
 
@@ -22,6 +23,12 @@ class ServiceOrchestrator:
         self.tasks: List[asyncio.Task] = []
         self.shutdown_event = asyncio.Event()
         self._purge_sentinel = self.settings.storage.base_path / ".net_history_purge"
+        self.storage_guard: StorageGuard | None = (
+            StorageGuard(self.settings.storage)
+            if self.settings.server.enabled
+            else None
+        )
+        self._storage_guard_task: asyncio.Task | None = None
 
     async def maybe_purge_net_history(self) -> None:
         """Optionally purge net history once per boot when configured."""
@@ -103,10 +110,17 @@ class ServiceOrchestrator:
         from tsn_server.system_load_monitor import SystemLoadMonitor
         from tsn_server.transcriber import TranscriptionPipeline
 
+        # Start storage guard before any services touch the mount
+        if self.storage_guard and self.storage_guard.enabled and not self._storage_guard_task:
+            guard_task = asyncio.create_task(self.storage_guard.run())
+            self.tasks.append(guard_task)
+            self._storage_guard_task = guard_task
+
         # Ingestion service
         ingestion = IngestionService(
             self.settings.server,
             self.settings.storage.base_path,
+            storage_guard=self.storage_guard,
         )
         ingestion_task = asyncio.create_task(ingestion.run_loop())
         self.tasks.append(ingestion_task)
@@ -121,6 +135,7 @@ class ServiceOrchestrator:
             self.settings.transcription,
             self.settings.storage.base_path,
             archive_dirs=self.settings.storage.archive_dirs,
+            storage_guard=self.storage_guard,
         )
         for i in range(self.settings.transcription.max_concurrent):
             worker_task = asyncio.create_task(transcriber.run_worker(i))

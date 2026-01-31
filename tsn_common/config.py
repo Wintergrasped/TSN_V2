@@ -410,6 +410,22 @@ class StorageSettings(BaseSettings):
         default_factory=tuple,
         description="Optional archive directories to search when restoring missing files",
     )
+    health_check_enabled: bool = Field(
+        default=True,
+        description="Enable periodic availability checks for the storage mount",
+    )
+    health_check_interval_sec: float = Field(
+        default=5.0,
+        description="Seconds between storage availability probes",
+    )
+    health_probe_filename: str = Field(
+        default=".tsn_storage_probe",
+        description="Sentinel filename used to detect if the storage mount disappeared",
+    )
+    health_missing_backoff_sec: int = Field(
+        default=300,
+        description="How long to pause heavy processing when storage is unavailable",
+    )
 
     @field_validator("base_path")
     @classmethod
