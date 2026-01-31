@@ -61,7 +61,8 @@ class ServiceOrchestrator:
 
         logger.info("starting_node_services")
 
-        from tsn_node.transfer import TransferAgent, transfer_worker
+        from tsn_node.archive_manager import ArchiveManager
+        from tsn_node.transfer import transfer_worker
         from tsn_node.watcher import FileWatcher
 
         # Create components
@@ -77,6 +78,11 @@ class ServiceOrchestrator:
                 transfer_worker(watcher.transfer_queue, self.settings.node, watcher)
             )
             self.tasks.append(worker_task)
+
+        if self.settings.node.archive_cleanup_enabled:
+            archive_manager = ArchiveManager(self.settings.node)
+            archive_task = asyncio.create_task(archive_manager.run())
+            self.tasks.append(archive_task)
 
         logger.info(
             "node_services_started",

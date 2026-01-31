@@ -76,6 +76,26 @@ class NodeSettings(BaseSettings):
     min_file_age_sec: float = Field(default=2.0, description="Minimum age before processing")
     min_file_size: int = Field(default=1000, description="Minimum file size (bytes)")
     transfer_workers: int = Field(default=2, description="Number of transfer workers")
+    archive_cleanup_enabled: bool = Field(
+        default=True,
+        description="Enable background archive compaction (WAV→MP3→zip)",
+    )
+    archive_cleanup_interval_hours: int = Field(
+        default=24,
+        description="How often (hours) to compact archived WAV files",
+    )
+    archive_cleanup_min_age_minutes: int = Field(
+        default=60,
+        description="Minimum file age (minutes) before eligible for compaction",
+    )
+    archive_mp3_bitrate_kbps: int = Field(
+        default=160,
+        description="Bitrate (kbps) for MP3 conversions",
+    )
+    archive_ffmpeg_path: str = Field(
+        default="ffmpeg",
+        description="Path to ffmpeg binary used for WAV→MP3 conversions",
+    )
 
     @field_validator("audio_incoming_dir", "audio_archive_dir")
     @classmethod
