@@ -125,6 +125,18 @@ class TranscriptionSettings(BaseSettings):
 
     max_concurrent: int = Field(default=4, description="Max concurrent transcriptions")
     timeout_sec: int = Field(default=300, description="Timeout per file")
+    hf_cache_dir: Path | None = Field(
+        default=None,
+        description="Optional HuggingFace cache directory override for Whisper models",
+    )
+    missing_file_error_threshold: int = Field(
+        default=25,
+        description="Consecutive missing-file errors before backing off",
+    )
+    missing_file_backoff_sec: int = Field(
+        default=120,
+        description="How long to pause transcription when storage appears missing",
+    )
 
     model_config = SettingsConfigDict(env_prefix="TSN_WHISPER_")
 
@@ -394,6 +406,10 @@ class StorageSettings(BaseSettings):
         default=Path("/tmp/tsn_storage"),
         description="Base storage directory for audio files",
     )
+    archive_dirs: tuple[Path, ...] = Field(
+        default_factory=tuple,
+        description="Optional archive directories to search when restoring missing files",
+    )
 
     @field_validator("base_path")
     @classmethod
@@ -401,6 +417,30 @@ class StorageSettings(BaseSettings):
         if not v.exists():
             v.mkdir(parents=True, exist_ok=True)
         return v
+
+    @field_validator("archive_dirs", mode="before")
+    @classmethod
+    def parse_archive_dirs(cls, value):  # type: ignore[override]
+        if value in (None, "", ()):  # pragma: no cover - configuration guard
+            return tuple()
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",")]
+            return tuple(Path(part) for part in parts if part)
+        if isinstance(value, Path):
+            return (value,)
+        if isinstance(value, (list, tuple, set)):
+            return tuple(Path(part) if not isinstance(part, Path) else part for part in value)
+        return value
+
+    @field_validator("archive_dirs")
+    @classmethod
+    def normalize_archive_dirs(cls, value: tuple[Path, ...]) -> tuple[Path, ...]:
+        normalized: list[Path] = []
+        for path in value:
+            if path in normalized:
+                continue
+            normalized.append(path)
+        return tuple(normalized)
 
     model_config = SettingsConfigDict(env_prefix="TSN_STORAGE_")
 

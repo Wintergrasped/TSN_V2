@@ -120,6 +120,7 @@ class ServiceOrchestrator:
         transcriber = TranscriptionPipeline(
             self.settings.transcription,
             self.settings.storage.base_path,
+            archive_dirs=self.settings.storage.archive_dirs,
         )
         for i in range(self.settings.transcription.max_concurrent):
             worker_task = asyncio.create_task(transcriber.run_worker(i))
