@@ -198,18 +198,21 @@ class LegacyUUIDMigrator:
                     logger.info("uuid_column_populated", table=table)
 
     async def _prepare_foreign_key_columns(self) -> None:
-        async with self.engine.begin() as conn:
-            for fk in self.FOREIGN_KEYS:
+        # Process each foreign key in its own transaction to avoid long-running locks
+        for fk in self.FOREIGN_KEYS:
+            async with self.engine.begin() as conn:
                 await self._prepare_foreign_key_helper(conn, fk)
 
     async def _drop_legacy_foreign_keys(self) -> None:
-        async with self.engine.begin() as conn:
-            for fk in self.FOREIGN_KEYS:
+        # Drop each foreign key in its own transaction
+        for fk in self.FOREIGN_KEYS:
+            async with self.engine.begin() as conn:
                 await self._drop_foreign_keys_for_column(conn, fk.table, fk.column)
 
     async def _swap_foreign_key_columns(self) -> None:
-        async with self.engine.begin() as conn:
-            for fk in self.FOREIGN_KEYS:
+        # Swap each foreign key column in its own transaction
+        for fk in self.FOREIGN_KEYS:
+            async with self.engine.begin() as conn:
                 if not await self._column_exists(conn, fk.table, fk.column):
                     logger.info(
                         "foreign_swap_skipped",
@@ -256,8 +259,8 @@ class LegacyUUIDMigrator:
                 logger.info("foreign_column_swapped", table=fk.table, column=fk.column)
 
     async def _swap_primary_keys(self) -> None:
-        async with self.engine.begin() as conn:
-            for table in self.TABLES:
+        for table in self.TABLES:
+            async with self.engine.begin() as conn:
                 if not await self._table_exists(conn, table):
                     continue
                 if not await self._column_exists(conn, table, "id_uuid"):
@@ -307,8 +310,8 @@ class LegacyUUIDMigrator:
     async def _recreate_indexes(self) -> None:
         if not self.index_definitions:
             return
-        async with self.engine.begin() as conn:
-            for definition in self.index_definitions.values():
+        for definition in self.index_definitions.values():
+            async with self.engine.begin() as conn:
                 column_clauses: List[str] = []
                 for column, sub_part in zip(definition.columns, definition.sub_parts):
                     if sub_part:
@@ -326,8 +329,8 @@ class LegacyUUIDMigrator:
                 logger.info("index_recreated", table=definition.table, index=definition.name)
 
     async def _add_foreign_keys(self) -> None:
-        async with self.engine.begin() as conn:
-            for fk in self.FOREIGN_KEYS:
+        for fk in self.FOREIGN_KEYS:
+            async with self.engine.begin() as conn:
                 if not await self._table_exists(conn, fk.table):
                     continue
                 if not await self._column_is_uuid(conn, fk.table, fk.column):
