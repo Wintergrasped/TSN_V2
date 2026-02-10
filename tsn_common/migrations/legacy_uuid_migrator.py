@@ -554,17 +554,44 @@ class LegacyUUIDMigrator:
             return False
         helper_column = f"{fk.column}_uuid"
         await self._ensure_column(conn, fk.table, helper_column, "CHAR(36) NULL")
-        await conn.execute(
-            text(
-                f"""
-                UPDATE `{fk.table}` child
-                JOIN `{fk.ref_table}` parent ON child.`{fk.column}` = parent.`id`
-                SET child.`{helper_column}` = parent.`{parent_uuid_column}`
-                WHERE child.`{fk.column}` IS NOT NULL
-                  AND child.`{helper_column}` IS NULL
-                """
+        
+        # Batch the UPDATE to avoid locking entire table for large tables
+        batch_size = 1000
+        total_updated = 0
+        while True:
+            result = await conn.execute(
+                text(
+                    f"""
+                    UPDATE `{fk.table}` child
+                    JOIN `{fk.ref_table}` parent ON child.`{fk.column}` = parent.`id`
+                    SET child.`{helper_column}` = parent.`{parent_uuid_column}`
+                    WHERE child.`{fk.column}` IS NOT NULL
+                      AND child.`{helper_column}` IS NULL
+                    LIMIT {batch_size}
+                    """
+                )
             )
-        )
+            rows_updated = result.rowcount
+            total_updated += rows_updated
+            if rows_updated == 0:
+                break
+            # Log progress for large tables
+            if total_updated % 5000 == 0:
+                logger.info(
+                    "foreign_helper_progress",
+                    table=fk.table,
+                    column=fk.column,
+                    rows_updated=total_updated,
+                )
+        
+        if total_updated > 0:
+            logger.info(
+                "foreign_helper_completed",
+                table=fk.table,
+                column=fk.column,
+                total_rows=total_updated,
+            )
+        
         orphan_count = await self._count_unmapped_helper_rows(conn, fk.table, helper_column, fk.column)
         nullable = fk.nullable or orphan_count > 0
         null_sql = "NULL" if nullable else "NOT NULL"
