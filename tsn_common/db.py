@@ -28,11 +28,20 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
+        
+        # Add connection arguments to prevent infinite hangs on table locks
+        connect_args = {
+            "connect_timeout": 10,  # Connection timeout in seconds
+            "read_timeout": 30,     # Query read timeout in seconds
+            "write_timeout": 30,    # Query write timeout in seconds
+        }
+        
         _engine = create_async_engine(
             settings.database.url,
             pool_size=settings.database.pool_size,
             max_overflow=settings.database.max_overflow,
             pool_timeout=settings.database.pool_timeout,
+            connect_args=connect_args,
             echo=settings.debug,
         )
         logger.info(
@@ -40,6 +49,8 @@ def get_engine() -> AsyncEngine:
             host=settings.database.host,
             database=settings.database.name,
             pool_size=settings.database.pool_size,
+            connect_timeout=10,
+            query_timeout=30,
         )
     return _engine
 

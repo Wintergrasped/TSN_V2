@@ -117,6 +117,9 @@ class LegacyUUIDMigrator:
 
     async def _prepare_uuid_columns(self) -> None:
         async with self.engine.begin() as conn:
+            # Set lock wait timeout to 10 seconds to fail fast if tables are locked
+            await conn.execute(text("SET SESSION lock_wait_timeout = 10"))
+            
             for table in self.TABLES:
                 if not await self._table_exists(conn, table):
                     continue
