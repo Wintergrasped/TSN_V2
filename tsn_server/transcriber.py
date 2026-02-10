@@ -81,13 +81,19 @@ class TranscriptionPipeline:
         """Determine which device/compute type to use for Whisper."""
         desired_device = self.settings.device
         compute_type = self.settings.compute_type
+        fallback_forced = False
 
         cuda_ok = self._cuda_available()
         if desired_device == "auto":
-            device = "cuda" if cuda_ok else "cpu"
+            if cuda_ok:
+                device = "cuda"
+            else:
+                device = "cpu"
+                fallback_forced = True
         elif desired_device == "cuda" and not cuda_ok:
             logger.warning("cuda_not_available_falling_back_to_cpu")
             device = "cpu"
+            fallback_forced = True
         else:
             device = desired_device
 
@@ -98,6 +104,11 @@ class TranscriptionPipeline:
                 fallback=DEFAULT_CPU_COMPUTE_TYPE,
             )
             compute_type = DEFAULT_CPU_COMPUTE_TYPE
+
+        if fallback_forced and device == "cpu" and not self.settings.allow_cpu_fallback:
+            raise RuntimeError(
+                "cpu_fallback_disabled_no_cuda_available",
+            )
 
         return device, compute_type
 
@@ -130,6 +141,12 @@ class TranscriptionPipeline:
                 if device == "cuda" and (
                     "libcublas" in error_msg or "cuda" in error_msg
                 ):
+                    if not self.settings.allow_cpu_fallback:
+                        logger.error(
+                            "cuda_initialization_failed_cpu_fallback_disabled",
+                            error=str(exc),
+                        )
+                        raise
                     logger.warning(
                         "cuda_initialization_failed_falling_back_to_cpu",
                         error=str(exc),
@@ -408,80 +425,80 @@ class TranscriptionPipeline:
                 # Update state to transcribing
                 audio_file.state = AudioFileState.TRANSCRIBING
                 await session.flush()
-        
-        # Transcribe (outside transaction for long-running operation)
-        transcription = await self.transcribe_file(audio_file)
-        
-        # Update database with retry logic for lock timeouts
-        max_retries = 3
-        retry_delay = 1.0
-        
-        for attempt in range(max_retries):
-            try:
-                async with get_session() as session:
-                    # Re-fetch audio file
-                    audio_file = await session.get(AudioFile, audio_file.id)
+            
+            # Transcribe (outside transaction for long-running operation)
+            transcription = await self.transcribe_file(audio_file)
+            
+            # Update database with retry logic for lock timeouts
+            max_retries = 3
+            retry_delay = 1.0
+            
+            for attempt in range(max_retries):
+                try:
+                    async with get_session() as session:
+                        # Re-fetch audio file
+                        audio_file = await session.get(AudioFile, audio_file.id)
+                        
+                        if audio_file is None:
+                            logger.error("audio_file_disappeared", audio_file_id=str(audio_file.id))
+                            return True
+                        
+                        if transcription:
+                            # Save transcription
+                            session.add(transcription)
+                            
+                            # Update state
+                            audio_file.state = AudioFileState.TRANSCRIBED
+                            audio_file.state = AudioFileState.QUEUED_EXTRACTION
+                            
+                            logger.info(
+                                "file_transcribed_queued_extraction",
+                                audio_file_id=str(audio_file.id),
+                                transcription_id=str(transcription.id),
+                            )
+                        else:
+                            # Mark as failed
+                            audio_file.state = AudioFileState.FAILED_TRANSCRIPTION
+                            audio_file.retry_count += 1
+                            
+                            logger.error(
+                                "file_transcription_failed",
+                                audio_file_id=str(audio_file.id),
+                                retry_count=audio_file.retry_count,
+                            )
                     
-                    if audio_file is None:
-                        logger.error("audio_file_disappeared", audio_file_id=str(audio_file.id))
-                        return True
-                    
-                    if transcription:
-                        # Save transcription
-                        session.add(transcription)
-                        
-                        # Update state
-                        audio_file.state = AudioFileState.TRANSCRIBED
-                        audio_file.state = AudioFileState.QUEUED_EXTRACTION
-                        
-                        logger.info(
-                            "file_transcribed_queued_extraction",
-                            audio_file_id=str(audio_file.id),
-                            transcription_id=str(transcription.id),
-                        )
-                    else:
-                        # Mark as failed
-                        audio_file.state = AudioFileState.FAILED_TRANSCRIPTION
-                        audio_file.retry_count += 1
-                        
-                        logger.error(
-                            "file_transcription_failed",
-                            audio_file_id=str(audio_file.id),
-                            retry_count=audio_file.retry_count,
-                        )
-                
-                # Success - break retry loop
-                break
-                
-            except Exception as e:
-                # Check if it's a database lock timeout
-                error_msg = str(e)
-                is_lock_timeout = "Lock wait timeout" in error_msg or "1205" in error_msg
-                
-                if is_lock_timeout and attempt < max_retries - 1:
-                    # Retry with exponential backoff
-                    wait_time = retry_delay * (2 ** attempt)
-                    logger.warning(
-                        "database_lock_timeout_retry",
-                        audio_file_id=str(audio_file.id),
-                        attempt=attempt + 1,
-                        wait_time=wait_time,
-                    )
-                    await asyncio.sleep(wait_time)
-                else:
-                    # Give up or different error
-                    logger.error(
-                        "database_update_failed",
-                        audio_file_id=str(audio_file.id),
-                        error=error_msg,
-                        is_lock_timeout=is_lock_timeout,
-                        exc_info=True,
-                    )
-                    # Don't return False - we did process it, just couldn't update DB
+                    # Success - break retry loop
                     break
-        
-        return True
-        
+                    
+                except Exception as e:
+                    # Check if it's a database lock timeout
+                    error_msg = str(e)
+                    is_lock_timeout = "Lock wait timeout" in error_msg or "1205" in error_msg
+                    
+                    if is_lock_timeout and attempt < max_retries - 1:
+                        # Retry with exponential backoff
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(
+                            "database_lock_timeout_retry",
+                            audio_file_id=str(audio_file.id),
+                            attempt=attempt + 1,
+                            wait_time=wait_time,
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        # Give up or different error
+                        logger.error(
+                            "database_update_failed",
+                            audio_file_id=str(audio_file.id),
+                            error=error_msg,
+                            is_lock_timeout=is_lock_timeout,
+                            exc_info=True,
+                        )
+                        # Don't return False - we did process it, just couldn't update DB
+                        break
+            
+            return True
+            
         finally:
             # Always release lock
             resource_lock.release_transcription()
