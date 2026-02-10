@@ -415,19 +415,27 @@ class TranscriptionPipeline:
         await resource_lock.acquire_transcription()
         
         try:
+            # Get next file and extract needed data within transaction
             async with get_session() as session:
-                # Get next file
                 audio_file = await self.get_next_file(session)
                 
                 if audio_file is None:
                     return False
                 
-                # Update state to transcribing
+                # Update state and extract data before commit
                 audio_file.state = AudioFileState.TRANSCRIBING
                 await session.flush()
+                
+                # Extract data while still in session
+                audio_file_id = audio_file.id
+                audio_filename = audio_file.filename
+                # Session commits here, releasing locks
             
             # Transcribe (outside transaction for long-running operation)
-            transcription = await self.transcribe_file(audio_file)
+            # Create temporary object with just the data we need
+            from types import SimpleNamespace
+            audio_file_data = SimpleNamespace(id=audio_file_id, filename=audio_filename)
+            transcription = await self.transcribe_file(audio_file_data)
             
             # Update database with retry logic for lock timeouts
             max_retries = 3
@@ -437,10 +445,10 @@ class TranscriptionPipeline:
                 try:
                     async with get_session() as session:
                         # Re-fetch audio file
-                        audio_file = await session.get(AudioFile, audio_file.id)
+                        audio_file = await session.get(AudioFile, audio_file_id)
                         
                         if audio_file is None:
-                            logger.error("audio_file_disappeared", audio_file_id=str(audio_file.id))
+                            logger.error("audio_file_disappeared", audio_file_id=str(audio_file_id))
                             return True
                         
                         if transcription:
@@ -480,7 +488,7 @@ class TranscriptionPipeline:
                         wait_time = retry_delay * (2 ** attempt)
                         logger.warning(
                             "database_lock_timeout_retry",
-                            audio_file_id=str(audio_file.id),
+                            audio_file_id=str(audio_file_id),
                             attempt=attempt + 1,
                             wait_time=wait_time,
                         )
@@ -489,7 +497,7 @@ class TranscriptionPipeline:
                         # Give up or different error
                         logger.error(
                             "database_update_failed",
-                            audio_file_id=str(audio_file.id),
+                            audio_file_id=str(audio_file_id),
                             error=error_msg,
                             is_lock_timeout=is_lock_timeout,
                             exc_info=True,
