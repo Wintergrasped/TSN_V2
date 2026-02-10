@@ -85,8 +85,18 @@ class LegacyUUIDMigrator:
             return
 
         logger.info("legacy_uuid_migration_started", schema=self.schema)
-        await self._prepare_uuid_columns()
-        await self._prepare_foreign_key_columns()
+        
+        # Only run steps that haven't been completed yet
+        if await self._has_pending_uuid_columns():
+            await self._prepare_uuid_columns()
+        else:
+            logger.info("uuid_columns_already_prepared")
+            
+        if await self._has_pending_foreign_key_helpers():
+            await self._prepare_foreign_key_columns()
+        else:
+            logger.info("foreign_key_helpers_already_prepared")
+            
         await self._drop_legacy_foreign_keys()
         await self._swap_foreign_key_columns()
         await self._swap_primary_keys()
@@ -108,6 +118,49 @@ class LegacyUUIDMigrator:
                     return True
             for fk in self.FOREIGN_KEYS:
                 if not await self._table_exists(conn, fk.table):
+                    continue
+                if not await self._column_exists(conn, fk.table, fk.column):
+                    continue
+                if not await self._column_is_uuid(conn, fk.table, fk.column):
+                    return True
+        return False
+
+    async def _has_pending_uuid_columns(self) -> bool:
+        """Check if any tables still need UUID column preparation."""
+        async with self.engine.begin() as conn:
+            for table in self.TABLES:
+                if not await self._table_exists(conn, table):
+                    continue
+                if not await self._column_exists(conn, table, "id"):
+                    continue
+                # If id is not UUID but id_uuid exists and is populated, skip this table
+                if not await self._column_is_uuid(conn, table, "id"):
+                    if await self._column_exists(conn, table, "id_uuid"):
+                        nulls = await self._count_null_values(conn, table, "id_uuid")
+                        if nulls == 0:
+                            # Already prepared, skip
+                            continue
+                    return True
+        return False
+
+    async def _has_pending_foreign_key_helpers(self) -> bool:
+        """Check if any foreign keys still need helper column preparation."""
+        async with self.engine.begin() as conn:
+            for fk in self.FOREIGN_KEYS:
+                if not await self._table_exists(conn, fk.table):
+                    continue
+                if not await self._column_exists(conn, fk.table, fk.column):
+                    continue
+                if await self._column_is_uuid(conn, fk.table, fk.column):
+                    continue
+                helper_column = f"{fk.column}_uuid"
+                if await self._column_exists(conn, fk.table, helper_column):
+                    nulls = await self._count_null_values(conn, fk.table, helper_column)
+                    if nulls == 0:
+                        # Already prepared
+                        continue
+                return True
+        return False
                     continue
                 if not await self._column_exists(conn, fk.table, fk.column):
                     continue
