@@ -29,8 +29,12 @@ from tsn_server.qrz_client import get_qrz_client
 logger = get_logger(__name__)
 
 # Regex pattern for amateur radio callsigns
+# Updated to handle spaces within callsigns (e.g., "K 7ABC", "K7 ABC")
+# Captures callsigns with optional spaces between prefix/digit, but not within suffix
+# Format: 1-2 letter prefix + optional space + digit + optional space + 1-4 alphanumeric suffix
+# This handles common transcription patterns while avoiding false matches
 CALLSIGN_PATTERN = re.compile(
-    r"\b([A-Z]{1,2}\d[A-Z]{1,4})\b",
+    r"(?:^|[^A-Z0-9])([A-Z]{1,2}\s*\d\s*[A-Z0-9]{1,4})(?=\s|[^A-Z0-9]|$)",
     re.IGNORECASE,
 )
 
@@ -71,12 +75,13 @@ class CallsignExtractor:
             text: Transcript text
             
         Returns:
-            List of candidate callsigns (normalized)
+            List of candidate callsigns (normalized, spaces removed)
         """
         candidates = set()
         
         for match in CALLSIGN_PATTERN.finditer(text):
-            callsign = normalize_callsign(match.group(1))
+            # Remove any spaces from the matched callsign and trailing spaces
+            callsign = normalize_callsign(match.group(1).replace(' ', '').rstrip())
             if len(callsign) >= 4:  # Minimum valid callsign length
                 candidates.add(callsign)
         
@@ -178,9 +183,6 @@ Respond with JSON only:
             )
             # Fall back to regex-only validation
             return {cs: True for cs in callsigns}
-        
-        finally:
-            resource_lock.release_vllm()
         
         finally:
             resource_lock.release_vllm()

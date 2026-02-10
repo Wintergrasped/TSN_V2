@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tsn_common.models import AudioFile, Transcription, CallsignLog
+from tsn_common.models import AudioFile, Transcription, CallsignLog, Callsign
 from tsn_common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -80,17 +80,21 @@ async def build_micro_window(
         total_duration += audio.duration_sec or 0
     
     # Get callsigns in window
+    # CallsignLog.transcription_id -> Transcription -> AudioFile
+    # CallsignLog.callsign_id -> Callsign.callsign
     callsign_stmt = (
         select(
-            CallsignLog.callsign,
+            Callsign.callsign,
             func.count(CallsignLog.id).label("count")
         )
-        .join(AudioFile, CallsignLog.audio_file_id == AudioFile.id)
+        .join(Callsign, CallsignLog.callsign_id == Callsign.id)
+        .join(Transcription, CallsignLog.transcription_id == Transcription.id)
+        .join(AudioFile, Transcription.audio_file_id == AudioFile.id)
         .where(
             AudioFile.created_at >= window_start,
             AudioFile.created_at < window_end,
         )
-        .group_by(CallsignLog.callsign)
+        .group_by(Callsign.callsign)
         .order_by(func.count(CallsignLog.id).desc())
     )
     if node_id:
