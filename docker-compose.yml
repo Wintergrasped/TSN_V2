@@ -8,6 +8,7 @@ services:
       dockerfile: Dockerfile
       target: server
     container_name: tsn_server
+    runtime: nvidia
     environment:
       # Database
       TSN_DB_HOST: ${TSN_DB_HOST}
@@ -21,12 +22,25 @@ services:
       TSN_NODE_ENABLED: "false"
       TSN_SERVER_INCOMING_DIR: /incoming
       TSN_STORAGE_BASE_PATH: /storage
+      TSN_STORAGE_ARCHIVE_DIRS: ${TSN_STORAGE_ARCHIVE_DIRS:-}
+      TSN_STORAGE_HEALTH_CHECK_ENABLED: ${TSN_STORAGE_HEALTH_CHECK_ENABLED:-true}
+      TSN_STORAGE_HEALTH_CHECK_INTERVAL_SEC: ${TSN_STORAGE_HEALTH_CHECK_INTERVAL_SEC:-5.0}
+      TSN_STORAGE_HEALTH_PROBE_FILENAME: ${TSN_STORAGE_HEALTH_PROBE_FILENAME:-.tsn_storage_probe}
+      TSN_STORAGE_HEALTH_MISSING_BACKOFF_SEC: ${TSN_STORAGE_HEALTH_MISSING_BACKOFF_SEC:-300}
       
       # Transcription
-      TSN_WHISPER_BACKEND: faster-whisper
-      TSN_WHISPER_MODEL: medium.en
-      TSN_WHISPER_DEVICE: cpu
-      TSN_WHISPER_MAX_CONCURRENT: 1
+      TSN_WHISPER_BACKEND: ${TSN_WHISPER_BACKEND:-faster-whisper}
+      TSN_WHISPER_MODEL: ${TSN_WHISPER_MODEL:-medium.en}
+      TSN_WHISPER_DEVICE: ${TSN_WHISPER_DEVICE:-cuda}
+      TSN_WHISPER_COMPUTE_TYPE: ${TSN_WHISPER_COMPUTE_TYPE:-float16}
+      TSN_WHISPER_LANGUAGE: ${TSN_WHISPER_LANGUAGE:-en}
+      TSN_WHISPER_ALLOW_CPU_FALLBACK: ${TSN_WHISPER_ALLOW_CPU_FALLBACK:-true}
+      TSN_WHISPER_HF_CACHE_DIR: ${TSN_WHISPER_HF_CACHE_DIR:-/models/hf_cache}
+      TSN_WHISPER_BEAM_SIZE: ${TSN_WHISPER_BEAM_SIZE:-5}
+      TSN_WHISPER_VAD_FILTER: ${TSN_WHISPER_VAD_FILTER:-true}
+      TSN_WHISPER_TEMPERATURE: ${TSN_WHISPER_TEMPERATURE:-0.0}
+      TSN_WHISPER_MAX_CONCURRENT: ${TSN_WHISPER_MAX_CONCURRENT:-2}
+      TSN_WHISPER_TIMEOUT_SEC: ${TSN_WHISPER_TIMEOUT_SEC:-300}
       
       # vLLM
       TSN_VLLM_BASE_URL: ${TSN_VLLM_BASE_URL}
@@ -44,8 +58,11 @@ services:
     volumes:
       - /home/wintergrasped/tsn_incoming:/incoming
       - storage_data:/storage
+      - hf_cache:/models/hf_cache
     ports:
       - "8080:8080"  # Health check & metrics
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Enable host.docker.internal on Linux
     deploy:
       resources:
         reservations:
@@ -196,6 +213,7 @@ services:
 volumes:
   incoming_data:
   storage_data:
+  hf_cache:
   node_incoming:
   node_archive:
   rtlsdr_recordings:

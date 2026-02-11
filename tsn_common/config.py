@@ -118,6 +118,10 @@ class TranscriptionSettings(BaseSettings):
     )
     compute_type: str = Field(default="float16", description="Compute type for faster-whisper")
     language: str = Field(default="en", description="Language code")
+    allow_cpu_fallback: bool = Field(
+        default=True,
+        description="Allow automatic fallback to CPU when CUDA is unavailable",
+    )
 
     beam_size: int = Field(default=5, description="Beam size for decoding")
     vad_filter: bool = Field(default=True, description="Enable VAD filtering")
@@ -145,7 +149,7 @@ class VLLMSettings(BaseSettings):
     """vLLM API settings."""
 
     base_url: str = Field(
-        default="http://192.168.0.104:8001/v1", description="vLLM base URL (OpenAI-compatible)"
+        default="http://host.docker.internal:8001/v1", description="vLLM base URL (OpenAI-compatible)"
     )
     model: str = Field(
         default="Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4", description="Model identifier"
