@@ -30,10 +30,9 @@ def get_engine() -> AsyncEngine:
         settings = get_settings()
         
         # Add connection arguments to prevent infinite hangs on table locks
+        # Note: asyncmy only supports connect_timeout, not read/write timeouts
         connect_args = {
             "connect_timeout": 10,  # Connection timeout in seconds
-            "read_timeout": 30,     # Query read timeout in seconds
-            "write_timeout": 30,    # Query write timeout in seconds
         }
         
         _engine = create_async_engine(
