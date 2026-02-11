@@ -1010,10 +1010,11 @@ class TranscriptAnalyzer:
         
         try:
             def candidate_urls() -> list[str]:
-            urls = [self.vllm_settings.base_url.rstrip("/")]
-            fallback = "http://127.0.0.1:8001"
-            if fallback not in urls:
-                urls.append(fallback)
+                urls = [self.vllm_settings.base_url.rstrip("/")]
+                fallback = "http://127.0.0.1:8001"
+                if fallback not in urls:
+                    urls.append(fallback)
+                return urls
 
             def _endpoint(url: str) -> str:
                 url = url.rstrip("/")
@@ -1021,166 +1022,163 @@ class TranscriptAnalyzer:
                     return f"{url}/chat/completions"
                 return f"{url}/v1/chat/completions"
 
-            return [_endpoint(url) for url in urls]
+            payload = {
+                "model": self.vllm_settings.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert amateur radio analyst. Use the entire"
+                            " context to detect nets, clubs, operator behavior, and"
+                            " emerging topics. Respond with strict JSON only."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "max_tokens": self.analysis_settings.max_response_tokens,
+                "response_format": {"type": "json_object"},
+            }
 
-        payload = {
-            "model": self.vllm_settings.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert amateur radio analyst. Use the entire"
-                        " context to detect nets, clubs, operator behavior, and"
-                        " emerging topics. Respond with strict JSON only."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.2,
-            "max_tokens": self.analysis_settings.max_response_tokens,
-            "response_format": {"type": "json_object"},
-        }
+            headers = {
+                "Authorization": f"Bearer {self.vllm_settings.api_key.get_secret_value()}",
+                "Content-Type": "application/json",
+            }
 
-        headers = {
-            "Authorization": f"Bearer {self.vllm_settings.api_key.get_secret_value()}",
-            "Content-Type": "application/json",
-        }
-
-        gpu_snapshot = await self._sample_gpu_utilization()
-        errors: list[tuple[str, str]] = []
-        endpoints = candidate_urls()
-        for attempt, endpoint in enumerate(endpoints, start=1):
-            try:
-                start_time = time.perf_counter()
-                response = await self.http_client.post(endpoint, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                latency_ms = int((time.perf_counter() - start_time) * 1000)
-                usage = data.get("usage") or {}
-                prompt_tokens = self._extract_usage_value(usage, ("prompt_tokens", "input_tokens"))
-                completion_tokens = self._extract_usage_value(usage, ("completion_tokens", "output_tokens"))
-                total_tokens = self._extract_usage_value(usage, ("total_tokens",)) or (
-                    (prompt_tokens or 0) + (completion_tokens or 0)
-                    if prompt_tokens is not None and completion_tokens is not None
-                    else None
-                )
-                content = data["choices"][0]["message"]["content"]
-                meta = {
-                    "model": data.get("model"),
-                    "usage": usage,
-                    "latency_ms": latency_ms,
-                }
-                await self._record_ai_pass_metric(
-                    backend="vllm",
-                    pass_label=pass_label,
-                    latency_ms=latency_ms,
-                    success=True,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                )
-                await self._log_ai_run(
-                    backend="vllm",
-                    model=data.get("model") or self.vllm_settings.model,
-                    pass_label=pass_label,
-                    prompt_text=prompt,
-                    response_text=content,
-                    success=True,
-                    latency_ms=latency_ms,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    audio_file_ids=audio_file_ids,
-                    metadata={
-                        **(extra_metadata or {}),
-                        "endpoint": endpoint,
-                        "attempt": attempt,
+            gpu_snapshot = await self._sample_gpu_utilization()
+            errors: list[tuple[str, str]] = []
+            endpoints = candidate_urls()
+            for attempt, endpoint in enumerate(endpoints, start=1):
+                try:
+                    start_time = time.perf_counter()
+                    response = await self.http_client.post(endpoint, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                    latency_ms = int((time.perf_counter() - start_time) * 1000)
+                    usage = data.get("usage") or {}
+                    prompt_tokens = self._extract_usage_value(usage, ("prompt_tokens", "input_tokens"))
+                    completion_tokens = self._extract_usage_value(usage, ("completion_tokens", "output_tokens"))
+                    total_tokens = self._extract_usage_value(usage, ("total_tokens",)) or (
+                        (prompt_tokens or 0) + (completion_tokens or 0)
+                        if prompt_tokens is not None and completion_tokens is not None
+                        else None
+                    )
+                    content = data["choices"][0]["message"]["content"]
+                    meta = {
+                        "model": data.get("model"),
                         "usage": usage,
-                    },
-                    gpu_utilization_pct=gpu_snapshot,
-                )
-                return content, meta
-            except httpx.ConnectError as exc:  # pragma: no cover - network heavy
-                error_msg = str(exc)
-                errors.append((endpoint, error_msg))
-                logger.warning(
-                    "vllm_call_attempt_failed",
-                    base_url=endpoint,
-                    error=error_msg,
-                    prompt_size=len(prompt),
-                )
-                await self._log_ai_run(
-                    backend="vllm",
-                    model=self.vllm_settings.model,
-                    pass_label=pass_label,
-                    prompt_text=prompt,
-                    response_text=None,
-                    success=False,
-                    latency_ms=None,
-                    audio_file_ids=audio_file_ids,
-                    metadata={
-                        **(extra_metadata or {}),
-                        "endpoint": endpoint,
-                        "attempt": attempt,
-                        "failure": "connect_error",
-                    },
-                    error_message=error_msg,
-                    gpu_utilization_pct=gpu_snapshot,
-                )
-                continue
-            except Exception as exc:  # pragma: no cover - network heavy
-                error_msg = str(exc)
-                logger.error("vllm_call_failed", base_url=endpoint, error=error_msg)
-                await self._log_ai_run(
-                    backend="vllm",
-                    model=self.vllm_settings.model,
-                    pass_label=pass_label,
-                    prompt_text=prompt,
-                    response_text=None,
-                    success=False,
-                    latency_ms=None,
-                    audio_file_ids=audio_file_ids,
-                    metadata={
-                        **(extra_metadata or {}),
-                        "endpoint": endpoint,
-                        "attempt": attempt,
-                        "failure": "exception",
-                    },
-                    error_message=error_msg,
-                    gpu_utilization_pct=gpu_snapshot,
-                )
-                await self._record_ai_pass_metric(
-                    backend="vllm",
-                    pass_label=pass_label,
-                    latency_ms=None,
-                    success=False,
-                    error=error_msg,
-                )
-                raise
+                        "latency_ms": latency_ms,
+                    }
+                    await self._record_ai_pass_metric(
+                        backend="vllm",
+                        pass_label=pass_label,
+                        latency_ms=latency_ms,
+                        success=True,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                    )
+                    await self._log_ai_run(
+                        backend="vllm",
+                        model=data.get("model") or self.vllm_settings.model,
+                        pass_label=pass_label,
+                        prompt_text=prompt,
+                        response_text=content,
+                        success=True,
+                        latency_ms=latency_ms,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        audio_file_ids=audio_file_ids,
+                        metadata={
+                            **(extra_metadata or {}),
+                            "endpoint": endpoint,
+                            "attempt": attempt,
+                            "usage": usage,
+                        },
+                        gpu_utilization_pct=gpu_snapshot,
+                    )
+                    return content, meta
+                except httpx.ConnectError as exc:  # pragma: no cover - network heavy
+                    error_msg = str(exc)
+                    errors.append((endpoint, error_msg))
+                    logger.warning(
+                        "vllm_call_attempt_failed",
+                        base_url=endpoint,
+                        error=error_msg,
+                        prompt_size=len(prompt),
+                    )
+                    await self._log_ai_run(
+                        backend="vllm",
+                        model=self.vllm_settings.model,
+                        pass_label=pass_label,
+                        prompt_text=prompt,
+                        response_text=None,
+                        success=False,
+                        latency_ms=None,
+                        audio_file_ids=audio_file_ids,
+                        metadata={
+                            **(extra_metadata or {}),
+                            "endpoint": endpoint,
+                            "attempt": attempt,
+                            "failure": "connect_error",
+                        },
+                        error_message=error_msg,
+                        gpu_utilization_pct=gpu_snapshot,
+                    )
+                    continue
+                except Exception as exc:  # pragma: no cover - network heavy
+                    error_msg = str(exc)
+                    logger.error("vllm_call_failed", base_url=endpoint, error=error_msg)
+                    await self._log_ai_run(
+                        backend="vllm",
+                        model=self.vllm_settings.model,
+                        pass_label=pass_label,
+                        prompt_text=prompt,
+                        response_text=None,
+                        success=False,
+                        latency_ms=None,
+                        audio_file_ids=audio_file_ids,
+                        metadata={
+                            **(extra_metadata or {}),
+                            "endpoint": endpoint,
+                            "attempt": attempt,
+                            "failure": "exception",
+                        },
+                        error_message=error_msg,
+                        gpu_utilization_pct=gpu_snapshot,
+                    )
+                    await self._record_ai_pass_metric(
+                        backend="vllm",
+                        pass_label=pass_label,
+                        latency_ms=None,
+                        success=False,
+                        error=error_msg,
+                    )
+                    raise
 
-        await self._record_ai_pass_metric(
-            backend="vllm",
-            pass_label=pass_label,
-            latency_ms=None,
-            success=False,
-            error="all_endpoints_failed",
-        )
-        await self._log_ai_run(
-            backend="vllm",
-            model=self.vllm_settings.model,
-            pass_label=pass_label,
-            prompt_text=prompt,
-            response_text=None,
-            success=False,
-            latency_ms=None,
-            audio_file_ids=audio_file_ids,
-            metadata={**(extra_metadata or {}), "endpoints": endpoints, "failure": "exhausted"},
-            error_message="all_endpoints_failed",
-            gpu_utilization_pct=gpu_snapshot,
-        )
-        logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
-        raise RuntimeError("All vLLM endpoints failed")
-        
+            await self._record_ai_pass_metric(
+                backend="vllm",
+                pass_label=pass_label,
+                latency_ms=None,
+                success=False,
+                error="all_endpoints_failed",
+            )
+            await self._log_ai_run(
+                backend="vllm",
+                model=self.vllm_settings.model,
+                pass_label=pass_label,
+                prompt_text=prompt,
+                response_text=None,
+                success=False,
+                latency_ms=None,
+                audio_file_ids=audio_file_ids,
+                metadata={**(extra_metadata or {}), "endpoints": endpoints, "failure": "exhausted"},
+                error_message="all_endpoints_failed",
+                gpu_utilization_pct=gpu_snapshot,
+            )
+            logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
+            raise RuntimeError("All vLLM endpoints failed")
         finally:
             resource_lock.release_vllm()
 
