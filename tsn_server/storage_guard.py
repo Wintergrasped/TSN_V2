@@ -115,4 +115,3 @@ class StorageGuard:
             return True, None
         except Exception as exc:  # pragma: no cover - depends on host FS
             return False, str(exc)
-*** End File
