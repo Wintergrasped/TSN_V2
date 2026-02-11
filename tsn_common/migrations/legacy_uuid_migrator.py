@@ -161,12 +161,6 @@ class LegacyUUIDMigrator:
                         continue
                 return True
         return False
-                    continue
-                if not await self._column_exists(conn, fk.table, fk.column):
-                    continue
-                if not await self._column_is_uuid(conn, fk.table, fk.column):
-                    return True
-        return False
 
     async def _prepare_uuid_columns(self) -> None:
         async with self.engine.begin() as conn:

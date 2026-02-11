@@ -858,45 +858,38 @@ class TranscriptAnalyzer:
 
         now = datetime.now(timezone.utc)
         updated: dict[uuid.UUID, dict[str, Any]] = {}
-        
-        # Process in small batches to avoid long-running transactions that lock the table
-        batch_size = 10
-        for i in range(0, len(entries), batch_size):
-            batch = entries[i:i + batch_size]
-            
-            async with get_session() as session:
-                for entry in batch:
-                    raw_id = entry.get("transcription_id") or entry.get("id")
-                    cleaned = (entry.get("smoothed_text") or entry.get("text") or "").strip()
-                    if not raw_id or not cleaned:
-                        continue
-                    try:
-                        transcription_id = uuid.UUID(str(raw_id))
-                    except ValueError:
-                        continue
-                    record = await session.get(Transcription, transcription_id)
-                    if not record:
-                        continue
+        async with get_session() as session:
+            for entry in entries:
+                raw_id = entry.get("transcription_id") or entry.get("id")
+                cleaned = (entry.get("smoothed_text") or entry.get("text") or "").strip()
+                if not raw_id or not cleaned:
+                    continue
+                try:
+                    transcription_id = uuid.UUID(str(raw_id))
+                except ValueError:
+                    continue
+                record = await session.get(Transcription, transcription_id)
+                if not record:
+                    continue
 
-                    metadata = dict(entry.get("metadata") or {})
-                    metadata.update(
-                        {
-                            "source": "vllm_smoothing",
-                            "latency_ms": latency_ms,
-                            "notes": entry.get("notes") or entry.get("issues"),
-                        }
-                    )
-
-                    record.smoothed_text = cleaned
-                    record.smoothed_metadata = metadata
-                    record.smoothed_at = now
-                    updated[transcription_id] = {
-                        "smoothed_text": cleaned,
-                        "smoothed_metadata": metadata,
-                        "smoothed_at": now,
+                metadata = dict(entry.get("metadata") or {})
+                metadata.update(
+                    {
+                        "source": "vllm_smoothing",
+                        "latency_ms": latency_ms,
+                        "notes": entry.get("notes") or entry.get("issues"),
                     }
-                # Commit happens automatically when context exits
-        
+                )
+
+                record.smoothed_text = cleaned
+                record.smoothed_metadata = metadata
+                record.smoothed_at = now
+                updated[transcription_id] = {
+                    "smoothed_text": cleaned,
+                    "smoothed_metadata": metadata,
+                    "smoothed_at": now,
+                }
+            await session.flush()
         return updated
 
     async def _smooth_context_transcripts(self, contexts: list[ContextEntry]) -> None:
@@ -1017,11 +1010,10 @@ class TranscriptAnalyzer:
         
         try:
             def candidate_urls() -> list[str]:
-                urls = [self.vllm_settings.base_url.rstrip("/")]
-                fallback = "http://127.0.0.1:8001"
-                if fallback not in urls:
-                    urls.append(fallback)
-                return urls
+            urls = [self.vllm_settings.base_url.rstrip("/")]
+            fallback = "http://127.0.0.1:8001"
+            if fallback not in urls:
+                urls.append(fallback)
 
             def _endpoint(url: str) -> str:
                 url = url.rstrip("/")
@@ -1188,8 +1180,9 @@ class TranscriptAnalyzer:
         )
         logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
         raise RuntimeError("All vLLM endpoints failed")
-    finally:
-        resource_lock.release_vllm()
+        
+        finally:
+            resource_lock.release_vllm()
 
     def _build_prompt(self, context_block: str) -> str:
         """Build the instruction payload referencing the attached context."""
@@ -1316,15 +1309,10 @@ If you need more context to finish a net, include a top-level
     async def _mark_audio_files(self, audio_ids: Sequence[uuid.UUID], state: AudioFileState, failed: bool = False) -> None:
         if not audio_ids:
             return
-        
-        # Process in batches to avoid locking too many rows
-        batch_size = 50
-        audio_id_list = list(audio_ids)
-        
-        for i in range(0, len(audio_id_list), batch_size):
-            batch = audio_id_list[i:i + batch_size]
-            async with get_session() as session:
-                for audio_id in batch:
+        async with get_session() as session:
+            # Use no_autoflush to prevent premature flush during queries
+            with session.no_autoflush:
+                for audio_id in audio_ids:
                     record = await session.get(AudioFile, audio_id)
                     if not record:
                         continue
@@ -1334,24 +1322,23 @@ If you need more context to finish a net, include a top-level
                     else:
                         record.state = AudioFileState.ANALYZED
                         record.state = AudioFileState.COMPLETE
-                # Commit happens when context exits
+            
+            # Now flush all changes at once
+            await session.flush()
 
     async def _release_unprocessed(self, audio_ids: Sequence[uuid.UUID]) -> None:
         if not audio_ids:
             return
-        
-        # Process in batches to avoid locking too many rows
-        batch_size = 50
-        audio_id_list = list(audio_ids)
-        
-        for i in range(0, len(audio_id_list), batch_size):
-            batch = audio_id_list[i:i + batch_size]
-            async with get_session() as session:
-                for audio_id in batch:
+        async with get_session() as session:
+            # Use no_autoflush to prevent premature flush during queries
+            with session.no_autoflush:
+                for audio_id in audio_ids:
                     record = await session.get(AudioFile, audio_id)
                     if record:
                         record.state = AudioFileState.QUEUED_ANALYSIS
-                # Commit happens when context exits
+            
+            # Now flush all changes at once
+            await session.flush()
 
     async def _get_or_create_callsign(self, session, raw_callsign: str) -> Callsign | None:
         normalized = normalize_callsign(raw_callsign)
@@ -2228,32 +2215,27 @@ If you need more context to finish a net, include a top-level
         if not contexts:
             return
 
-        # Process in batches to avoid long-running transactions
-        batch_size = 20
-        now = datetime.now(timezone.utc)
-        
-        for i in range(0, len(contexts), batch_size):
-            batch = contexts[i:i + batch_size]
-            async with get_session() as session:
-                for ctx in batch:
-                    record = await session.get(AudioFile, ctx.audio_id)
-                    if not record:
-                        continue
-                    metadata = dict(record.metadata_ or {})
-                    history = list(metadata.get("analysis_history") or [])
-                    history.append({
-                        "pass_type": ctx.pass_type,
-                        "completed_at": now.isoformat(),
-                    })
-                    metadata["analysis_history"] = history[-10:]
-                    metadata["analysis_passes"] = int(metadata.get("analysis_passes", 0)) + 1
-                    metadata["last_analysis_pass_type"] = ctx.pass_type
-                    metadata["last_analysis_completed_at"] = now.isoformat()
-                    metadata.pop("analysis_mode", None)
-                    metadata.pop("pending_refinement", None)
-                    metadata.pop("refinement_reason", None)
-                    record.metadata_ = metadata
-                # Commit happens when context exits
+        async with get_session() as session:
+            now = datetime.now(timezone.utc)
+            for ctx in contexts:
+                record = await session.get(AudioFile, ctx.audio_id)
+                if not record:
+                    continue
+                metadata = dict(record.metadata_ or {})
+                history = list(metadata.get("analysis_history") or [])
+                history.append({
+                    "pass_type": ctx.pass_type,
+                    "completed_at": now.isoformat(),
+                })
+                metadata["analysis_history"] = history[-10:]
+                metadata["analysis_passes"] = int(metadata.get("analysis_passes", 0)) + 1
+                metadata["last_analysis_pass_type"] = ctx.pass_type
+                metadata["last_analysis_completed_at"] = now.isoformat()
+                metadata.pop("analysis_mode", None)
+                metadata.pop("pending_refinement", None)
+                metadata.pop("refinement_reason", None)
+                record.metadata_ = metadata
+            await session.flush()
 
     async def _record_analysis_audit(
         self,
