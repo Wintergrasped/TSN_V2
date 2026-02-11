@@ -354,7 +354,7 @@ Respond with JSON only:
             select(AudioFile, Transcription)
             .join(Transcription, AudioFile.id == Transcription.audio_file_id)
             .where(AudioFile.state == AudioFileState.QUEUED_EXTRACTION)
-            .order_by(AudioFile.created_at)
+            .order_by(AudioFile.created_at.desc())  # Newest first - prioritize live files
             .limit(1)
             .with_for_update(skip_locked=True)
         )

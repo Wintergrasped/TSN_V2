@@ -189,7 +189,7 @@ class TranscriptAnalyzer:
                 select(AudioFile, Transcription)
                 .join(Transcription, AudioFile.id == Transcription.audio_file_id)
                 .where(AudioFile.state == AudioFileState.QUEUED_ANALYSIS)
-                .order_by(AudioFile.created_at)
+                .order_by(AudioFile.created_at.desc())  # Newest first - prioritize live files
                 .limit(self.analysis_settings.max_batch_size)
                 .with_for_update(skip_locked=True)
             )
@@ -237,7 +237,7 @@ class TranscriptAnalyzer:
                     AudioFile.state == AudioFileState.QUEUED_ANALYSIS,
                     AudioFile.created_at > after,
                 )
-                .order_by(AudioFile.created_at)
+                .order_by(AudioFile.created_at.desc())  # Newest first - prioritize live files
                 .limit(limit)
                 .with_for_update(skip_locked=True)
             )

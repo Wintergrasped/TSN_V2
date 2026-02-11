@@ -396,7 +396,7 @@ class TranscriptionPipeline:
         result = await session.execute(
             select(AudioFile)
             .where(AudioFile.state == AudioFileState.QUEUED_TRANSCRIPTION)
-            .order_by(AudioFile.created_at)
+            .order_by(AudioFile.created_at.desc())  # Newest first - prioritize live files
             .limit(1)
             .with_for_update(skip_locked=True)
         )
