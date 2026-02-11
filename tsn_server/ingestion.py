@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tsn_common.config import ServerSettings, get_settings
 from tsn_common.db import get_session
 from tsn_common.logging import get_logger
-from tsn_common.models import AudioFile, AudioFileState, Node
+from tsn_common.models import AudioFile, AudioFileState
 from tsn_common.resource_lock import get_resource_lock
 from tsn_common.utils import (
     compute_sha256,
