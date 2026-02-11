@@ -206,7 +206,29 @@ class LegacyUUIDMigrator:
     async def _drop_legacy_foreign_keys(self) -> None:
         # Drop each foreign key in its own transaction
         for fk in self.FOREIGN_KEYS:
+            # Check if already dropped before starting transaction
             async with self.engine.begin() as conn:
+                # Skip if table doesn't exist
+                if not await self._table_exists(conn, fk.table):
+                    continue
+                # Skip if column already UUID (FKs already recreated)
+                if await self._column_is_uuid(conn, fk.table, fk.column):
+                    logger.info(
+                        "foreign_drop_skipped",
+                        table=fk.table,
+                        column=fk.column,
+                        reason="already_uuid",
+                    )
+                    continue
+                # Skip if no FKs exist on this column
+                if not await self._has_foreign_keys_on_column(conn, fk.table, fk.column):
+                    logger.info(
+                        "foreign_drop_skipped",
+                        table=fk.table,
+                        column=fk.column,
+                        reason="no_fks_found",
+                    )
+                    continue
                 await self._drop_foreign_keys_for_column(conn, fk.table, fk.column)
 
     async def _swap_foreign_key_columns(self) -> None:
@@ -354,6 +376,40 @@ class LegacyUUIDMigrator:
                 )
                 await conn.execute(sql)
                 logger.info("foreign_recreated", table=fk.table, column=fk.column)
+
+    async def _foreign_key_exists(self, conn: AsyncConnection, table: str, constraint_name: str) -> bool:
+        """Check if a specific foreign key constraint exists."""
+        result = await conn.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+                WHERE TABLE_SCHEMA = :schema
+                  AND TABLE_NAME = :table
+                  AND CONSTRAINT_NAME = :constraint
+                  AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+                """
+            ),
+            {"schema": self.schema, "table": table, "constraint": constraint_name},
+        )
+        return bool(result.scalar())
+
+    async def _has_foreign_keys_on_column(self, conn: AsyncConnection, table: str, column: str) -> bool:
+        """Check if a column has any foreign key constraints."""
+        result = await conn.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                WHERE TABLE_SCHEMA = :schema
+                  AND TABLE_NAME = :table
+                  AND COLUMN_NAME = :column
+                  AND REFERENCED_TABLE_NAME IS NOT NULL
+                """
+            ),
+            {"schema": self.schema, "table": table, "column": column},
+        )
+        return bool(result.scalar())
 
     async def _record_migration(self) -> None:
         async with self.engine.begin() as conn:
