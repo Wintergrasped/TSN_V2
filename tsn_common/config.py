@@ -410,9 +410,9 @@ class StorageSettings(BaseSettings):
         default=Path("/tmp/tsn_storage"),
         description="Base storage directory for audio files",
     )
-    archive_dirs: tuple[Path, ...] = Field(
-        default_factory=tuple,
-        description="Optional archive directories to search when restoring missing files",
+    archive_dirs: tuple[Path, ...] | str = Field(
+        default="",
+        description="Optional archive directories to search when restoring missing files (comma-separated)",
     )
     health_check_enabled: bool = Field(
         default=True,
@@ -440,19 +440,24 @@ class StorageSettings(BaseSettings):
 
     @field_validator("archive_dirs", mode="before")
     @classmethod
-    def parse_archive_dirs(cls, value):  # type: ignore[override]
-        if value in (None, "", ()):  # pragma: no cover - configuration guard
+    def parse_archive_dirs(cls, value) -> tuple[Path, ...]:
+        # Handle empty/None values before Pydantic tries JSON parsing
+        if value is None or value == "" or value == ():
             return tuple()
         if isinstance(value, str):
+            # Handle whitespace-only strings
+            value = value.strip()
+            if not value:
+                return tuple()
             parts = [part.strip() for part in value.split(",")]
             return tuple(Path(part) for part in parts if part)
         if isinstance(value, Path):
             return (value,)
         if isinstance(value, (list, tuple, set)):
             return tuple(Path(part) if not isinstance(part, Path) else part for part in value)
-        return value
+        return tuple()
 
-    @field_validator("archive_dirs")
+    @field_validator("archive_dirs", mode="after")
     @classmethod
     def normalize_archive_dirs(cls, value: tuple[Path, ...]) -> tuple[Path, ...]:
         normalized: list[Path] = []
