@@ -1188,9 +1188,8 @@ class TranscriptAnalyzer:
         )
         logger.error("vllm_call_failed_all_endpoints", errors=errors, prompt_size=len(prompt))
         raise RuntimeError("All vLLM endpoints failed")
-        
-        finally:
-            resource_lock.release_vllm()
+    finally:
+        resource_lock.release_vllm()
 
     def _build_prompt(self, context_block: str) -> str:
         """Build the instruction payload referencing the attached context."""
