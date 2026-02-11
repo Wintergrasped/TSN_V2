@@ -1017,10 +1017,11 @@ class TranscriptAnalyzer:
         
         try:
             def candidate_urls() -> list[str]:
-            urls = [self.vllm_settings.base_url.rstrip("/")]
-            fallback = "http://127.0.0.1:8001"
-            if fallback not in urls:
-                urls.append(fallback)
+                urls = [self.vllm_settings.base_url.rstrip("/")]
+                fallback = "http://127.0.0.1:8001"
+                if fallback not in urls:
+                    urls.append(fallback)
+                return urls
 
             def _endpoint(url: str) -> str:
                 url = url.rstrip("/")
