@@ -51,7 +51,9 @@ class StuckFileRecovery:
                 stuck_transcribing = result.scalars().all()
                 
                 for audio_file in stuck_transcribing:
-                    stuck_duration = datetime.now(timezone.utc) - audio_file.updated_at
+                    # Make updated_at timezone-aware (MySQL returns naive datetimes as UTC)
+                    updated_at_utc = audio_file.updated_at.replace(tzinfo=timezone.utc)
+                    stuck_duration = datetime.now(timezone.utc) - updated_at_utc
                     stuck_minutes = int(stuck_duration.total_seconds() / 60)
                     
                     logger.warning(
@@ -77,7 +79,9 @@ class StuckFileRecovery:
                 stuck_analyzing = result.scalars().all()
                 
                 for audio_file in stuck_analyzing:
-                    stuck_duration = datetime.now(timezone.utc) - audio_file.updated_at
+                    # Make updated_at timezone-aware (MySQL returns naive datetimes as UTC)
+                    updated_at_utc = audio_file.updated_at.replace(tzinfo=timezone.utc)
+                    stuck_duration = datetime.now(timezone.utc) - updated_at_utc
                     stuck_minutes = int(stuck_duration.total_seconds() / 60)
                     
                     logger.warning(
@@ -103,7 +107,9 @@ class StuckFileRecovery:
                 stuck_extracting = result.scalars().all()
                 
                 for audio_file in stuck_extracting:
-                    stuck_duration = datetime.now(timezone.utc) - audio_file.updated_at
+                    # Make updated_at timezone-aware (MySQL returns naive datetimes as UTC)
+                    updated_at_utc = audio_file.updated_at.replace(tzinfo=timezone.utc)
+                    stuck_duration = datetime.now(timezone.utc) - updated_at_utc
                     stuck_minutes = int(stuck_duration.total_seconds() / 60)
                     
                     logger.warning(
