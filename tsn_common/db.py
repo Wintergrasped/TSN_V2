@@ -100,13 +100,19 @@ async def close_engine() -> None:
 
 async def _run_bootstrap_migrations() -> None:
     """Run idempotent migrations that keep legacy installs current."""
+    
+    # MIGRATIONS DISABLED - causing table locks on startup
+    # The UUID migration is taking too long and locking transcriptions table
+    # Re-enable after migration is fully debugged or run manually offline
+    logger.warning("bootstrap_migrations_disabled", reason="table_lock_prevention")
+    return
 
-    from tsn_common.migrations.legacy_uuid_migrator import LegacyUUIDMigrator
-    from tsn_common.migrations.metrics_expansion import MetricsExpansionMigrator
+    # from tsn_common.migrations.legacy_uuid_migrator import LegacyUUIDMigrator
+    # from tsn_common.migrations.metrics_expansion import MetricsExpansionMigrator
 
-    migrators = [LegacyUUIDMigrator(), MetricsExpansionMigrator()]
-    for migrator in migrators:
-        await migrator.run()
+    # migrators = [LegacyUUIDMigrator(), MetricsExpansionMigrator()]
+    # for migrator in migrators:
+    #     await migrator.run()
 
 
 async def _ensure_schema_ready() -> None:
