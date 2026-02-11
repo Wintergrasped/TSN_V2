@@ -1047,8 +1047,9 @@ class TranscriptAnalyzer:
 
             gpu_snapshot = await self._sample_gpu_utilization()
             errors: list[tuple[str, str]] = []
-            endpoints = candidate_urls()
-            for attempt, endpoint in enumerate(endpoints, start=1):
+            base_urls = candidate_urls()
+            for attempt, base_url in enumerate(base_urls, start=1):
+                endpoint = _endpoint(base_url)
                 try:
                     start_time = time.perf_counter()
                     response = await self.http_client.post(endpoint, headers=headers, json=payload)
@@ -1101,10 +1102,10 @@ class TranscriptAnalyzer:
                     return content, meta
                 except httpx.ConnectError as exc:  # pragma: no cover - network heavy
                     error_msg = str(exc)
-                    errors.append((endpoint, error_msg))
+                    errors.append((base_url, error_msg))
                     logger.warning(
                         "vllm_call_attempt_failed",
-                        base_url=endpoint,
+                        base_url=base_url,
                         error=error_msg,
                         prompt_size=len(prompt),
                     )
@@ -1129,7 +1130,7 @@ class TranscriptAnalyzer:
                     continue
                 except Exception as exc:  # pragma: no cover - network heavy
                     error_msg = str(exc)
-                    logger.error("vllm_call_failed", base_url=endpoint, error=error_msg)
+                    logger.error("vllm_call_failed", base_url=base_url, error=error_msg)
                     await self._log_ai_run(
                         backend="vllm",
                         model=self.vllm_settings.model,
@@ -1173,7 +1174,7 @@ class TranscriptAnalyzer:
                 success=False,
                 latency_ms=None,
                 audio_file_ids=audio_file_ids,
-                metadata={**(extra_metadata or {}), "endpoints": endpoints, "failure": "exhausted"},
+                metadata={**(extra_metadata or {}), "base_urls": base_urls, "failure": "exhausted"},
                 error_message="all_endpoints_failed",
                 gpu_utilization_pct=gpu_snapshot,
             )
