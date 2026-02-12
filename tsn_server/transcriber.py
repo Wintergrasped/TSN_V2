@@ -131,6 +131,14 @@ class TranscriptionPipeline:
                 os.environ["HF_TOKEN"] = self.settings.hf_token.get_secret_value()
                 logger.debug("huggingface_token_configured")
 
+            # Set specific CUDA device if configured
+            if self.settings.cuda_device is not None and self.settings.device in ("cuda", "auto"):
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(self.settings.cuda_device)
+                logger.info(
+                    "cuda_device_configured",
+                    cuda_device=self.settings.cuda_device,
+                )
+
             device, compute_type = self._resolve_runtime()
 
             try:
@@ -138,6 +146,7 @@ class TranscriptionPipeline:
                     self.settings.model,
                     device=device,
                     compute_type=compute_type,
+                    device_index=0 if self.settings.cuda_device is not None else 0,  # Always 0 since CUDA_VISIBLE_DEVICES remaps
                 )
                 self.model_device = device
                 self.model_compute_type = compute_type

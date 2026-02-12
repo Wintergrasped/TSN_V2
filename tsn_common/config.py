@@ -116,6 +116,10 @@ class TranscriptionSettings(BaseSettings):
         default="auto",
         description="Device preference: cuda, cpu, or auto-detect",
     )
+    cuda_device: int | None = Field(
+        default=None,
+        description="Specific CUDA device index (0, 1, 2, etc.) for Whisper. None = use CUDA_VISIBLE_DEVICES or default",
+    )
     compute_type: str = Field(default="float16", description="Compute type for faster-whisper")
     language: str = Field(default="en", description="Language code")
     allow_cpu_fallback: bool = Field(
