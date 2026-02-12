@@ -215,6 +215,10 @@ class IngestionService:
                     duration_sec=audio_file.duration_sec,
                 )
                 
+                # Notify resource lock to pause vLLM for 3 minutes
+                resource_lock = get_resource_lock()
+                resource_lock.notify_ingestion()
+                
                 return audio_file
                 
         except Exception as e:
