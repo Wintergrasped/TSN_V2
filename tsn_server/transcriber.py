@@ -126,6 +126,11 @@ class TranscriptionPipeline:
                 os.environ.setdefault("HF_HOME", str(cache_dir))
                 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(cache_dir / "hub"))
 
+            # Set HuggingFace token if provided for faster downloads
+            if self.settings.hf_token:
+                os.environ["HF_TOKEN"] = self.settings.hf_token.get_secret_value()
+                logger.debug("huggingface_token_configured")
+
             device, compute_type = self._resolve_runtime()
 
             try:

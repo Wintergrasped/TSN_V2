@@ -133,6 +133,10 @@ class TranscriptionSettings(BaseSettings):
         default=None,
         description="Optional HuggingFace cache directory override for Whisper models",
     )
+    hf_token: SecretStr | None = Field(
+        default=None,
+        description="HuggingFace API token for faster model downloads (optional)",
+    )
     missing_file_error_threshold: int = Field(
         default=25,
         description="Consecutive missing-file errors before backing off",
