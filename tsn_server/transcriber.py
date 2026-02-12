@@ -136,6 +136,12 @@ class TranscriptionPipeline:
                 )
                 self.model_device = device
                 self.model_compute_type = compute_type
+                logger.info(
+                    "whisper_model_loaded",
+                    device=device,
+                    compute_type=compute_type,
+                    model=self.settings.model,
+                )
             except RuntimeError as exc:
                 error_msg = str(exc).lower()
                 if device == "cuda" and (
@@ -172,6 +178,33 @@ class TranscriptionPipeline:
             )
         else:
             raise NotImplementedError(f"Backend {self.settings.backend} not implemented")
+
+    def _unload_model(self) -> None:
+        """Unload Whisper model to free GPU memory for vLLM."""
+        if self.model is None:
+            return
+        
+        logger.info(
+            "whisper_model_unloading",
+            device=self.model_device,
+            model=self.settings.model,
+        )
+        
+        # Delete model and force garbage collection
+        del self.model
+        self.model = None
+        
+        # Force CUDA memory cleanup if we were using GPU
+        if self.model_device == "cuda":
+            try:
+                import torch
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                logger.info("cuda_memory_freed")
+            except Exception as e:
+                logger.warning("cuda_cleanup_failed", error=str(e))
+        
+        logger.info("whisper_model_unloaded")
 
     async def transcribe_file(
         self,
@@ -246,6 +279,9 @@ class TranscriptionPipeline:
                 char_count=transcription.char_count,
             )
             
+            # Unload model to free GPU memory for vLLM
+            self._unload_model()
+            
             return transcription
             
         except Exception as e:
@@ -256,6 +292,8 @@ class TranscriptionPipeline:
                 error=str(e),
                 exc_info=True,
             )
+            # Unload model even on failure
+            self._unload_model()
             return None
 
     def _restore_from_archive(self, filename: str) -> Optional[Path]:
