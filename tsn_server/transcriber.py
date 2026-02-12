@@ -149,30 +149,45 @@ class TranscriptionPipeline:
                 )
             except RuntimeError as exc:
                 error_msg = str(exc).lower()
-                if device == "cuda" and (
-                    "libcublas" in error_msg or "cuda" in error_msg
-                ):
-                    if not self.settings.allow_cpu_fallback:
-                        logger.error(
-                            "cuda_initialization_failed_cpu_fallback_disabled",
+                is_cuda_error = device == "cuda" and ("libcublas" in error_msg or "cuda" in error_msg or "out of memory" in error_msg)
+                
+                if is_cuda_error:
+                    # Priority 1: Try OpenAI fallback if enabled
+                    if self.settings.openai_fallback_enabled and self.settings.openai_api_key:
+                        logger.warning(
+                            "cuda_initialization_failed_openai_fallback_will_be_used",
                             error=str(exc),
                         )
-                        raise
-                    logger.warning(
-                        "cuda_initialization_failed_falling_back_to_cpu",
+                        # Don't load local model - let transcribe_file use OpenAI
+                        self.model = None
+                        self.model_device = "openai"
+                        self.model_compute_type = "api"
+                        return
+                    
+                    # Priority 2: Try CPU fallback if enabled
+                    if self.settings.allow_cpu_fallback:
+                        logger.warning(
+                            "cuda_initialization_failed_falling_back_to_cpu",
+                            error=str(exc),
+                        )
+                        device = "cpu"
+                        compute_type = DEFAULT_CPU_COMPUTE_TYPE
+                        self.model = WhisperModel(
+                            self.settings.model,
+                            device=device,
+                            compute_type=compute_type,
+                        )
+                        self.model_device = device
+                        self.model_compute_type = compute_type
+                        return
+                    
+                    # No fallback available
+                    logger.error(
+                        "cuda_initialization_failed_no_fallback_available",
                         error=str(exc),
                     )
-                    device = "cpu"
-                    compute_type = DEFAULT_CPU_COMPUTE_TYPE
-                    self.model = WhisperModel(
-                        self.settings.model,
-                        device=device,
-                        compute_type=compute_type,
-                    )
-                    self.model_device = device
-                    self.model_compute_type = compute_type
-                else:
-                    raise
+                
+                raise
 
             logger.info(
                 "whisper_model_loaded",
@@ -253,33 +268,55 @@ class TranscriptionPipeline:
             transcript_text = None
             backend_used = TranscriptionBackend.FASTER_WHISPER
             
-            # Try local GPU transcription first
-            try:
-                # Load model if needed
-                self._load_model()
-                
-                # Run transcription in executor (blocking I/O)
-                loop = asyncio.get_event_loop()
-                transcript_text = await loop.run_in_executor(
-                    None,
-                    self._transcribe_sync,
-                    str(file_path),
-                )
-            except RuntimeError as gpu_error:
-                error_msg = str(gpu_error).lower()
-                is_gpu_error = "cuda" in error_msg or "out of memory" in error_msg or "gpu" in error_msg
-                
-                # Try OpenAI fallback if GPU failed and fallback is enabled
-                if is_gpu_error and self.settings.openai_fallback_enabled and self.settings.openai_api_key:
-                    logger.warning(
-                        "gpu_transcription_failed_trying_openai_fallback",
-                        audio_file_id=str(audio_file.id),
-                        error=str(gpu_error),
+            # Check if we're in OpenAI-only mode (GPU failed during init)
+            if self.model_device == "openai":
+                transcript_text = await self._transcribe_openai(file_path)
+                backend_used = TranscriptionBackend.OPENAI
+            else:
+                # Try local GPU/CPU transcription first
+                try:
+                    # Load model if needed
+                    self._load_model()
+                    
+                    # Run transcription in executor (blocking I/O)
+                    loop = asyncio.get_event_loop()
+                    transcript_text = await loop.run_in_executor(
+                        None,
+                        self._transcribe_sync,
+                        str(file_path),
                     )
-                    transcript_text = await self._transcribe_openai(file_path)
-                    backend_used = TranscriptionBackend.OPENAI
-                else:
-                    raise
+                except RuntimeError as gpu_error:
+                    error_msg = str(gpu_error).lower()
+                    is_gpu_error = "cuda" in error_msg or "out of memory" in error_msg or "gpu" in error_msg
+                    
+                    # Try OpenAI fallback if GPU failed during transcription
+                    if is_gpu_error and self.settings.openai_fallback_enabled and self.settings.openai_api_key:
+                        logger.warning(
+                            "gpu_transcription_failed_trying_openai_fallback",
+                            audio_file_id=str(audio_file.id),
+                            error=str(gpu_error),
+                        )
+                        transcript_text = await self._transcribe_openai(file_path)
+                        backend_used = TranscriptionBackend.OPENAI
+                    # Try CPU fallback if OpenAI not available but CPU fallback enabled
+                    elif is_gpu_error and self.settings.allow_cpu_fallback:
+                        logger.warning(
+                            "gpu_transcription_failed_trying_cpu_fallback",
+                            audio_file_id=str(audio_file.id),
+                            error=str(gpu_error),
+                        )
+                        # Force reload model on CPU
+                        self._unload_model()
+                        self.settings.device = "cpu"
+                        self._load_model()
+                        loop = asyncio.get_event_loop()
+                        transcript_text = await loop.run_in_executor(
+                            None,
+                            self._transcribe_sync,
+                            str(file_path),
+                        )
+                    else:
+                        raise
             
             processing_time_ms = int((time.time() - start_time) * 1000)
             
