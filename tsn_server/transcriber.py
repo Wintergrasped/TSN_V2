@@ -250,17 +250,36 @@ class TranscriptionPipeline:
             )
             
             start_time = time.time()
+            transcript_text = None
+            backend_used = TranscriptionBackend.FASTER_WHISPER
             
-            # Load model if needed
-            self._load_model()
-            
-            # Run transcription in executor (blocking I/O)
-            loop = asyncio.get_event_loop()
-            transcript_text = await loop.run_in_executor(
-                None,
-                self._transcribe_sync,
-                str(file_path),
-            )
+            # Try local GPU transcription first
+            try:
+                # Load model if needed
+                self._load_model()
+                
+                # Run transcription in executor (blocking I/O)
+                loop = asyncio.get_event_loop()
+                transcript_text = await loop.run_in_executor(
+                    None,
+                    self._transcribe_sync,
+                    str(file_path),
+                )
+            except RuntimeError as gpu_error:
+                error_msg = str(gpu_error).lower()
+                is_gpu_error = "cuda" in error_msg or "out of memory" in error_msg or "gpu" in error_msg
+                
+                # Try OpenAI fallback if GPU failed and fallback is enabled
+                if is_gpu_error and self.settings.openai_fallback_enabled and self.settings.openai_api_key:
+                    logger.warning(
+                        "gpu_transcription_failed_trying_openai_fallback",
+                        audio_file_id=str(audio_file.id),
+                        error=str(gpu_error),
+                    )
+                    transcript_text = await self._transcribe_openai(file_path)
+                    backend_used = TranscriptionBackend.OPENAI
+                else:
+                    raise
             
             processing_time_ms = int((time.time() - start_time) * 1000)
             
@@ -269,7 +288,7 @@ class TranscriptionPipeline:
                 audio_file_id=audio_file.id,
                 transcript_text=transcript_text,
                 language=self.settings.language,
-                backend=TranscriptionBackend.FASTER_WHISPER,
+                backend=backend_used,
                 processing_time_ms=processing_time_ms,
                 word_count=len(transcript_text.split()) if transcript_text else 0,
                 char_count=len(transcript_text) if transcript_text else 0,
@@ -420,6 +439,70 @@ class TranscriptionPipeline:
         text = " ".join(seg.text.strip() for seg in segments).strip()
         
         return text
+
+    async def _transcribe_openai(self, file_path: Path) -> str:
+        """
+        Transcribe using OpenAI API as fallback.
+        
+        Args:
+            file_path: Path to audio file
+            
+        Returns:
+            Transcript text
+        """
+        if not self.settings.openai_api_key:
+            raise RuntimeError("OpenAI API key not configured")
+        
+        try:
+            import httpx
+            
+            logger.info(
+                "transcription_using_openai_fallback",
+                filename=file_path.name,
+                model=self.settings.openai_model,
+            )
+            
+            # OpenAI Whisper API expects the file as multipart/form-data
+            with open(file_path, "rb") as audio_file:
+                files = {
+                    "file": (file_path.name, audio_file, "audio/wav"),
+                }
+                data = {
+                    "model": self.settings.openai_model,
+                    "language": self.settings.language,
+                }
+                headers = {
+                    "Authorization": f"Bearer {self.settings.openai_api_key.get_secret_value()}",
+                }
+                
+                async with httpx.AsyncClient(timeout=self.settings.timeout_sec) as client:
+                    response = await client.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        files=files,
+                        data=data,
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    
+                    transcript_text = result.get("text", "").strip()
+                    
+                    logger.info(
+                        "openai_transcription_completed",
+                        filename=file_path.name,
+                        word_count=len(transcript_text.split()) if transcript_text else 0,
+                    )
+                    
+                    return transcript_text
+                    
+        except Exception as e:
+            logger.error(
+                "openai_transcription_failed",
+                filename=file_path.name,
+                error=str(e),
+                exc_info=True,
+            )
+            raise
 
     async def get_next_file(
         self,

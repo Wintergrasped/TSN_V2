@@ -145,6 +145,20 @@ class TranscriptionSettings(BaseSettings):
         default=120,
         description="How long to pause transcription when storage appears missing",
     )
+    
+    # OpenAI fallback settings
+    openai_api_key: SecretStr | None = Field(
+        default=None,
+        description="OpenAI API key for fallback transcription when GPU is unavailable",
+    )
+    openai_fallback_enabled: bool = Field(
+        default=False,
+        description="Enable OpenAI API fallback when local GPU fails or is unavailable",
+    )
+    openai_model: str = Field(
+        default="whisper-1",
+        description="OpenAI Whisper model to use for fallback",
+    )
 
     model_config = SettingsConfigDict(env_prefix="TSN_WHISPER_")
 
