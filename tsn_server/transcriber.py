@@ -46,13 +46,8 @@ class TranscriptionPipeline:
         archive_dirs: Iterable[Path] | None = None,
         storage_guard: StorageGuard | None = None,
     ):
-        # CRITICAL: Set CUDA device BEFORE any CUDA operations
-        if settings.cuda_device is not None and settings.device in ("cuda", "auto"):
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(settings.cuda_device)
-            logger.info(
-                "cuda_device_set_for_whisper",
-                cuda_device=settings.cuda_device,
-            )
+        # Note: CUDA_VISIBLE_DEVICES must be set in tsn_orchestrator.py BEFORE imports
+        # Setting it here is too late - CUDA context already initialized
         
         self.settings = settings
         self.storage_dir = storage_dir

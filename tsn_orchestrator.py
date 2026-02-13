@@ -2,11 +2,19 @@
 Main orchestrator - launches all TSN services.
 """
 
+import os
 from datetime import datetime, timezone
 import asyncio
 import signal
 from pathlib import Path
 from typing import List
+
+# CRITICAL: Set CUDA device for Whisper BEFORE any CUDA imports
+# This must happen before torch/faster-whisper loads
+_whisper_cuda_device = os.environ.get("TSN_WHISPER_CUDA_DEVICE")
+if _whisper_cuda_device:
+    os.environ["CUDA_VISIBLE_DEVICES"] = _whisper_cuda_device
+    # Note: Logger not available yet, will log later
 
 from tsn_common.config import get_settings
 from tsn_common.logging import get_logger, setup_logging
@@ -29,6 +37,14 @@ class ServiceOrchestrator:
             else None
         )
         self._storage_guard_task: asyncio.Task | None = None
+        
+        # Log CUDA device configuration (set at module import time)
+        if _whisper_cuda_device:
+            logger.info(
+                "whisper_cuda_device_configured_at_startup",
+                cuda_device=_whisper_cuda_device,
+                cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
+            )
 
     async def maybe_purge_net_history(self) -> None:
         """Optionally purge net history once per boot when configured."""
