@@ -20,9 +20,12 @@ class ResourceLock:
     2. Wait a few seconds
     3. Run transcription pipeline
     4. Keep vLLM paused for 3 minutes after ingestion (to catch net starts)
+    
+    If separate GPUs are configured (TSN_WHISPER_CUDA_DEVICE set), transcription
+    lock does NOT block vLLM operations (they can run simultaneously).
     """
     
-    def __init__(self):
+    def __init__(self, separate_gpus: bool = False):
         self._transcription_lock = asyncio.Lock()
         self._vllm_lock = asyncio.Lock()
         self._transcription_active = False
@@ -30,8 +33,13 @@ class ResourceLock:
         self._ingestion_cooldown_minutes = 3
         self._system_pause_until: Optional[datetime] = None
         self._system_pause_reason: Optional[str] = None
+        self._separate_gpus = separate_gpus
         
-        logger.info("resource_lock_initialized")
+        logger.info(
+            "resource_lock_initialized",
+            separate_gpus=separate_gpus,
+            transcription_blocks_vllm=not separate_gpus,
+        )
     
     async def acquire_transcription(self) -> None:
         """
@@ -56,13 +64,13 @@ class ResourceLock:
         Acquire vLLM lock (lower priority than transcription).
         
         Waits if:
-        - Transcription is active
+        - Transcription is active (only if using same GPU)
         - Within cooldown period after file ingestion
         """
         while True:
-            # Check if transcription is active
-            if self._transcription_active:
-                logger.debug("vllm_waiting_for_transcription")
+            # Check if transcription is active (only block if sharing GPU)
+            if not self._separate_gpus and self._transcription_active:
+                logger.debug("vllm_waiting_for_transcription_same_gpu")
                 await asyncio.sleep(1.0)
                 continue
             
@@ -137,7 +145,7 @@ class ResourceLock:
     
     def is_vllm_blocked(self) -> bool:
         """Check if vLLM operations are currently blocked."""
-        if self._transcription_active:
+        if not self._separate_gpus and self._transcription_active:
             return True
         
         if self.get_ingestion_cooldown_remaining() > 0:
@@ -186,5 +194,9 @@ def get_resource_lock() -> ResourceLock:
     """Get global resource lock singleton."""
     global _resource_lock
     if _resource_lock is None:
-        _resource_lock = ResourceLock()
+        # Auto-detect if separate GPUs are configured
+        import os
+        cuda_device = os.environ.get("TSN_WHISPER_CUDA_DEVICE")
+        separate_gpus = cuda_device is not None and cuda_device != ""
+        _resource_lock = ResourceLock(separate_gpus=separate_gpus)
     return _resource_lock
