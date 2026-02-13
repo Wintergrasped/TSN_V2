@@ -46,6 +46,14 @@ class TranscriptionPipeline:
         archive_dirs: Iterable[Path] | None = None,
         storage_guard: StorageGuard | None = None,
     ):
+        # CRITICAL: Set CUDA device BEFORE any CUDA operations
+        if settings.cuda_device is not None and settings.device in ("cuda", "auto"):
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(settings.cuda_device)
+            logger.info(
+                "cuda_device_set_for_whisper",
+                cuda_device=settings.cuda_device,
+            )
+        
         self.settings = settings
         self.storage_dir = storage_dir
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -62,6 +70,7 @@ class TranscriptionPipeline:
             backend=settings.backend,
             model=settings.model,
             device=settings.device,
+            cuda_device=settings.cuda_device,
             archive_dir_count=len(self.archive_dirs),
             storage_guard_enabled=bool(storage_guard),
         )
@@ -130,14 +139,6 @@ class TranscriptionPipeline:
             if self.settings.hf_token:
                 os.environ["HF_TOKEN"] = self.settings.hf_token.get_secret_value()
                 logger.debug("huggingface_token_configured")
-
-            # Set specific CUDA device if configured
-            if self.settings.cuda_device is not None and self.settings.device in ("cuda", "auto"):
-                os.environ["CUDA_VISIBLE_DEVICES"] = str(self.settings.cuda_device)
-                logger.info(
-                    "cuda_device_configured",
-                    cuda_device=self.settings.cuda_device,
-                )
 
             device, compute_type = self._resolve_runtime()
 
