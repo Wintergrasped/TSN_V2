@@ -137,12 +137,15 @@ class TranscriptionPipeline:
 
             device, compute_type = self._resolve_runtime()
 
+            # Fallback chain: Try GPU devices in order, then OpenAI, then CPU
+            attempted_devices = []
+            
             try:
                 self.model = WhisperModel(
                     self.settings.model,
                     device=device,
                     compute_type=compute_type,
-                    device_index=0 if self.settings.cuda_device is not None else 0,  # Always 0 since CUDA_VISIBLE_DEVICES remaps
+                    device_index=0,  # Always 0 since CUDA_VISIBLE_DEVICES remaps
                 )
                 self.model_device = device
                 self.model_compute_type = compute_type
@@ -157,11 +160,50 @@ class TranscriptionPipeline:
                 is_cuda_error = device == "cuda" and ("libcublas" in error_msg or "cuda" in error_msg or "out of memory" in error_msg)
                 
                 if is_cuda_error:
-                    # Priority 1: Try OpenAI fallback if enabled
-                    if self.settings.openai_fallback_enabled and self.settings.openai_api_key:
+                    current_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "unknown")
+                    attempted_devices.append(f"GPU{current_gpu}")
+                    logger.warning(
+                        "cuda_device_failed_trying_fallback",
+                        failed_device=current_gpu,
+                        error=str(exc),
+                    )
+                    
+                    # Try alternate GPU (0 if we tried 1, or 1 if we tried 0)
+                    alternate_gpu = "0" if current_gpu == "1" else "1"
+                    try:
+                        os.environ["CUDA_VISIBLE_DEVICES"] = alternate_gpu
+                        logger.info("trying_alternate_gpu", gpu=alternate_gpu)
+                        
+                        self.model = WhisperModel(
+                            self.settings.model,
+                            device="cuda",
+                            compute_type=compute_type,
+                            device_index=0,
+                        )
+                        self.model_device = "cuda"
+                        self.model_compute_type = compute_type
+                        logger.info(
+                            "whisper_model_loaded_alternate_gpu",
+                            device="cuda",
+                            gpu=alternate_gpu,
+                            compute_type=compute_type,
+                            model=self.settings.model,
+                        )
+                        return  # Success!
+                    except RuntimeError as alt_exc:
+                        attempted_devices.append(f"GPU{alternate_gpu}")
                         logger.warning(
-                            "cuda_initialization_failed_openai_fallback_will_be_used",
-                            error=str(exc),
+                            "alternate_gpu_failed",
+                            gpu=alternate_gpu,
+                            error=str(alt_exc),
+                        )
+                    
+                    # Try OpenAI fallback if enabled
+                    if self.settings.openai_fallback_enabled and self.settings.openai_api_key:
+                        attempted_devices.append("OpenAI_API")
+                        logger.warning(
+                            "all_gpus_failed_using_openai_api",
+                            attempted=attempted_devices,
                         )
                         # Don't load local model - let transcribe_file use OpenAI
                         self.model = None
@@ -169,11 +211,12 @@ class TranscriptionPipeline:
                         self.model_compute_type = "api"
                         return
                     
-                    # Priority 2: Try CPU fallback if enabled
+                    # Last resort: Try CPU fallback if enabled
                     if self.settings.allow_cpu_fallback:
+                        attempted_devices.append("CPU")
                         logger.warning(
-                            "cuda_initialization_failed_falling_back_to_cpu",
-                            error=str(exc),
+                            "all_gpus_failed_falling_back_to_cpu",
+                            attempted=attempted_devices,
                         )
                         device = "cpu"
                         compute_type = DEFAULT_CPU_COMPUTE_TYPE
@@ -188,7 +231,8 @@ class TranscriptionPipeline:
                     
                     # No fallback available
                     logger.error(
-                        "cuda_initialization_failed_no_fallback_available",
+                        "all_devices_failed_no_fallback_available",
+                        attempted=attempted_devices,
                         error=str(exc),
                     )
                 
