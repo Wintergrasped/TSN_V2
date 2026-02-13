@@ -87,17 +87,18 @@ class TranscriptionPipeline:
         compute_type = self.settings.compute_type
         fallback_forced = False
 
-        cuda_ok = self._cuda_available()
-        if desired_device == "auto":
+        # When cuda_device is explicitly configured, trust the fallback chain
+        # to handle GPU detection rather than pre-checking torch.cuda.is_available()
+        if desired_device == "cuda":
+            device = "cuda"
+            # Fallback chain in _load_model() will handle if GPU actually unavailable
+        elif desired_device == "auto":
+            cuda_ok = self._cuda_available()
             if cuda_ok:
                 device = "cuda"
             else:
                 device = "cpu"
                 fallback_forced = True
-        elif desired_device == "cuda" and not cuda_ok:
-            logger.warning("cuda_not_available_falling_back_to_cpu")
-            device = "cpu"
-            fallback_forced = True
         else:
             device = desired_device
 
