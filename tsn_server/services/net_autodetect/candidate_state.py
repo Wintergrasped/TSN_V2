@@ -132,9 +132,20 @@ class CandidateStateMachine:
         ]
         
         # WARMUP → ACTIVE
+        # RELAXED CRITERIA: Use peak likelihood + average, not all windows
         if candidate.status == CandidateStatus.WARMUP:
             if len(recent_likelihoods) >= self.settings.candidate_start_consecutive_windows:
-                if all(l >= self.settings.candidate_start_likelihood for l in recent_likelihoods):
+                # Check if ANY window hit high likelihood AND average is reasonable
+                peak_in_recent = max(recent_likelihoods) if recent_likelihoods else 0
+                avg_in_recent = sum(recent_likelihoods) / len(recent_likelihoods) if recent_likelihoods else 0
+                
+                # Activate if: (peak >= 65 AND avg >= 25) OR (avg >= 40)
+                meets_likelihood = (
+                    (peak_in_recent >= self.settings.candidate_start_likelihood and avg_in_recent >= 25) or
+                    (avg_in_recent >= 40)
+                )
+                
+                if meets_likelihood:
                     unique_callsigns = len(candidate.features_json.get("unique_callsigns", []))
                     if unique_callsigns >= self.settings.candidate_min_unique_callsigns:
                         candidate.status = CandidateStatus.ACTIVE
@@ -142,6 +153,8 @@ class CandidateStateMachine:
                             "net_autodetect_candidate_activated",
                             candidate_id=str(candidate.id),
                             likelihood_avg=candidate.vllm_confidence_avg,
+                            likelihood_peak=peak_in_recent,
+                            likelihood_recent_avg=avg_in_recent,
                             callsigns=unique_callsigns,
                         )
         

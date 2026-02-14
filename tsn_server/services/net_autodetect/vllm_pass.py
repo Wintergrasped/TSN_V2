@@ -73,7 +73,28 @@ async def evaluate_micro_window(
 **TRANSCRIPT EXCERPTS**:
 {chr(10).join(excerpts)}
 
-**TASK**: Evaluate net likelihood and extract signals.
+**TASK**: Evaluate net likelihood (0-100) and extract signals.
+
+**NET INDICATORS** (score HIGH if present):
+- ANY mention of "net" (e.g., "net control", "this is the [name] net", "net is now", "happy hour net")
+- Check-in activity (calling for check-ins, operators checking in with callsigns)
+- NCS managing traffic ("any check-ins?", "go ahead", "thanks for checking in")
+- Opening/closing statements ("this is", "net will close")
+- Roll call or directed conversation flow
+- Multiple operators communicating in organized manner
+
+**NOT A NET** (score LOW):
+- Single operator transmission with no response
+- Unstructured ragchew (back-and-forth conversation with no net structure)
+- Testing or technical discussions only
+- Completely random, unrelated transmissions
+
+**SCORING GUIDE**:
+- 80-100: Clear net activity with NCS and structure
+- 60-79: Likely a net (multiple operators, some organization)
+- 40-59: Possible net (check-ins mentioned, organized feel)
+- 20-39: Weak signals (maybe informal net or ragchew)
+- 0-19: No net activity (random QSOs or single operators)
 
 Respond STRICTLY with JSON:
 {{
@@ -89,15 +110,6 @@ Respond STRICTLY with JSON:
   "suggested_action": "continue|start_candidate|extend_candidate|end_candidate|ignore"
 }}
 
-FORMAL NETS have:
-- NCS managing traffic ("Any check-ins?", "Go ahead", "We have...")
-- Formal check-ins with callsign/name/location
-- Opening ("This is the [name] net") or closing statements
-- Directed conversation flow
-
-RANDOM QSOs have:
-- Unstructured back-and-forth
-- No formal check-ins
 - No NCS coordination
 """
     

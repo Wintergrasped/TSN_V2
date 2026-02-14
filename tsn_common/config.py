@@ -510,10 +510,10 @@ class NetAutoDetectSettings(BaseSettings):
     # Candidate state machine thresholds
     candidate_start_likelihood: int = Field(default=65, description="Min likelihood to start candidate")
     candidate_start_consecutive_windows: int = Field(default=3, description="Windows above threshold to start")
-    candidate_extend_likelihood: int = Field(default=55, description="Min likelihood to extend candidate")
-    candidate_end_likelihood: int = Field(default=40, description="Max likelihood before ending candidate")
+    candidate_extend_likelihood: int = Field(default=45, description="Min likelihood to extend candidate")
+    candidate_end_likelihood: int = Field(default=30, description="Max likelihood before ending candidate")
     candidate_end_consecutive_windows: int = Field(default=4, description="Windows below threshold to end")
-    candidate_min_unique_callsigns: int = Field(default=6, description="Min callsigns for candidate promotion")
+    candidate_min_unique_callsigns: int = Field(default=4, description="Min callsigns for candidate promotion (lowered from 6 - many nets have 4-5 participants)")
 
     # Multi-pass vLLM use
     boundary_refinement_interval_minutes: int = Field(
