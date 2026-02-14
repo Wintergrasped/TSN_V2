@@ -11,18 +11,23 @@ logger = get_logger(__name__)
 
 class ResourceLock:
     """
-    Global resource lock to prevent transcription and vLLM from running simultaneously.
+    Global resource lock to coordinate transcription and vLLM usage.
     
-    Priority: Transcription > vLLM
+    Priority: Transcription > vLLM (only when sharing GPU)
     
-    When audio files are ingested:
-    1. Pause all vLLM operations
-    2. Wait a few seconds
-    3. Run transcription pipeline
-    4. Keep vLLM paused for 3 minutes after ingestion (to catch net starts)
+    **Separate GPU Mode** (TSN_WHISPER_CUDA_DEVICE set):
+    - Whisper (transcription) runs on dedicated GPU
+    - vLLM runs on different GPU
+    - NO blocking or cooldowns - both run simultaneously
+    - Ingestion doesn't pause vLLM
     
-    If separate GPUs are configured (TSN_WHISPER_CUDA_DEVICE set), transcription
-    lock does NOT block vLLM operations (they can run simultaneously).
+    **Shared GPU Mode** (no TSN_WHISPER_CUDA_DEVICE):
+    - When audio files are ingested:
+      1. Pause all vLLM operations
+      2. Wait a few seconds
+      3. Run transcription pipeline
+      4. Keep vLLM paused for 3 minutes after ingestion
+    - Transcription lock blocks vLLM operations
     """
     
     def __init__(self, separate_gpus: bool = False):
@@ -74,8 +79,8 @@ class ResourceLock:
                 await asyncio.sleep(1.0)
                 continue
             
-            # Check if within ingestion cooldown
-            if self._last_ingestion_time:
+            # Check if within ingestion cooldown (only if sharing GPU)
+            if not self._separate_gpus and self._last_ingestion_time:
                 cooldown_end = self._last_ingestion_time + timedelta(
                     minutes=self._ingestion_cooldown_minutes
                 )
@@ -119,14 +124,21 @@ class ResourceLock:
         """
         Notify that audio files have been ingested.
         
-        Triggers cooldown period to pause vLLM operations.
+        Triggers cooldown period to pause vLLM operations (only if sharing GPU).
+        With separate GPUs, ingestion doesn't affect vLLM.
         """
         self._last_ingestion_time = datetime.now(timezone.utc)
         
-        logger.info(
-            "audio_ingestion_notified_vllm_paused",
-            cooldown_minutes=self._ingestion_cooldown_minutes,
-        )
+        if self._separate_gpus:
+            logger.info(
+                "audio_ingestion_notified_separate_gpus",
+                vllm_paused=False,
+            )
+        else:
+            logger.info(
+                "audio_ingestion_notified_vllm_paused",
+                cooldown_minutes=self._ingestion_cooldown_minutes,
+            )
     
     def get_ingestion_cooldown_remaining(self) -> int:
         """Get remaining cooldown seconds, or 0 if no cooldown active."""
@@ -145,10 +157,12 @@ class ResourceLock:
     
     def is_vllm_blocked(self) -> bool:
         """Check if vLLM operations are currently blocked."""
+        # Transcription only blocks vLLM if sharing GPU
         if not self._separate_gpus and self._transcription_active:
             return True
         
-        if self.get_ingestion_cooldown_remaining() > 0:
+        # Ingestion cooldown only blocks vLLM if sharing GPU
+        if not self._separate_gpus and self.get_ingestion_cooldown_remaining() > 0:
             return True
 
         return self.get_system_pause_remaining() > 0
