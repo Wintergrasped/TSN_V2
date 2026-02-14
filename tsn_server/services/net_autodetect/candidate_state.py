@@ -184,10 +184,14 @@ class CandidateStateMachine:
                 if all(l < self.settings.candidate_end_likelihood for l in recent_likelihoods):
                     candidate.status = CandidateStatus.ENDED
                     candidate.end_ts = datetime.now(timezone.utc)
+                    # Ensure start_ts is timezone-aware for duration calculation
+                    start_ts_aware = candidate.start_ts
+                    if start_ts_aware.tzinfo is None:
+                        start_ts_aware = start_ts_aware.replace(tzinfo=timezone.utc)
                     logger.info(
                         "net_autodetect_candidate_ended",
                         candidate_id=str(candidate.id),
-                        duration_minutes=int((candidate.end_ts - candidate.start_ts).total_seconds() / 60),
+                        duration_minutes=int((candidate.end_ts - start_ts_aware).total_seconds() / 60),
                         evaluations=candidate.vllm_evaluation_count,
                     )
     

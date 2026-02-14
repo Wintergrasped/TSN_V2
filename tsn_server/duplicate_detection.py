@@ -274,7 +274,7 @@ Respond STRICTLY with JSON:
         # Add metadata
         metadata = dict(duplicate_file.metadata_ or {})
         metadata["is_duplicate"] = True
-        metadata["duplicate_of"] = original_file_id
+        metadata["duplicate_of"] = str(original_file_id)  # Convert UUID to string for JSON
         metadata["duplicate_detected_at"] = datetime.now(timezone.utc).isoformat()
         duplicate_file.metadata_ = metadata
         
