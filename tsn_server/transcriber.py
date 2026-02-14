@@ -60,6 +60,10 @@ class TranscriptionPipeline:
         self._missing_file_streak = 0
         self._missing_files_blocked_until: Optional[datetime] = None
         
+        # Detect if we have a dedicated GPU (don't need to unload between files)
+        # If TSN_WHISPER_CUDA_DEVICE is set, we have a dedicated GPU for Whisper
+        self._dedicated_gpu = bool(os.environ.get("TSN_WHISPER_CUDA_DEVICE"))
+        
         logger.info(
             "transcription_pipeline_initialized",
             backend=settings.backend,
@@ -250,7 +254,20 @@ class TranscriptionPipeline:
             raise NotImplementedError(f"Backend {self.settings.backend} not implemented")
 
     def _unload_model(self) -> None:
-        """Unload Whisper model to free GPU memory for vLLM."""
+        """
+        Unload Whisper model to free GPU memory for vLLM.
+        
+        Only unloads if NOT using a dedicated GPU. When using a dedicated GPU
+        (TSN_WHISPER_CUDA_DEVICE set), keep model loaded for faster processing.
+        """
+        # Skip unload if using dedicated GPU - no memory contention with vLLM
+        if self._dedicated_gpu:
+            logger.debug(
+                "skipping_model_unload_dedicated_gpu",
+                device=self.model_device,
+            )
+            return
+        
         if self.model is None:
             return
         
